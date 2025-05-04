@@ -2,7 +2,7 @@
 
 A command-line tool to encrypt and decrypt files using AES-256-GCM and Argon2 password-based key derivation. Encrypted files are stored in a directory containing the ciphertext, salt, nonce, and original filename.
 
-In the past I had used GPG to password encrypt files but I was looking over its protcols and noticed that it uses a somewhat dated KDF and does not include authenticated encryption, this fills those gaps. The intented use is on binary or plaintext files.
+In the past I had used GPG to password encrypt files but I was looking over its protcols and noticed that it uses a somewhat dated KDF and does not include authenticated encryption, this fills those gaps.
 
 ## Features
 

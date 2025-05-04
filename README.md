@@ -1,6 +1,6 @@
 # File Encryption
 
-A command-line tool to encrypt and decrypt files using AES-256-GCM and Argon2 password-based key derivation. Encrypted files are stored in a directory containing the ciphertext, salt, nonce, and original filename.
+A command-line tool to encrypt and decrypt files using AES-256-GCM and Argon2 password-based key derivation. Encrypted files are stored in a single `.enc` file containing all necessary decryption parameters and the ciphertext.
 
 In the past I had used GPG to password encrypt files but I was looking over its protcols and noticed that it uses a somewhat dated KDF and does not include authenticated encryption, this fills those gaps.
 
@@ -11,7 +11,8 @@ In the past I had used GPG to password encrypt files but I was looking over its 
 - Secure random salt and nonce generation
 - Memory zeroization of sensitive data
 - Password verification during encryption
-- Original filename preservation
+- All data stored in a single `.enc` file for convenience
+
 
 ## Dependencies
 
@@ -35,11 +36,8 @@ cargo run --release -- e path/to/file.txt
 ```
 
 - You will be prompted to enter and confirm a password.
-- The tool will create a directory named after your file (without extension) in the same location, containing:
-  - `ciphertext.bin` (the encrypted data)
-  - `salt.bin` (the random salt)
-  - `nonce.bin` (the random nonce)
-  - `original_filename.txt` (the original filename)
+- The tool will create a file named after your input, but with a `.enc` extension (e.g., `file.enc`).
+- The `.enc` file contains all information needed for decryption: salt, nonce, original filename, and ciphertext.
 
 ### Decrypt a file
 
@@ -52,15 +50,30 @@ cargo run --release -- d path/to/file
 ```
 
 - You will be prompted for the password used during encryption.
-- The tool will write the decrypted file into the same directory, using the original filename.
+- The tool will write the decrypted file in the same directory, using the original filename embedded in the `.enc` file.
 
+## File Format
+
+The `.enc` file is a custom binary format with the following structure:
+
+| Field            | Size         | Description                                 |
+|------------------|--------------|---------------------------------------------|
+| Magic bytes      | 4 bytes      | `b"ENC1"` (format identifier)               |
+| Salt             | 16 bytes     | Random salt for Argon2 key derivation       |
+| Nonce            | 12 bytes     | Random nonce for AES-GCM                    |
+| Filename length  | 2 bytes      | Big-endian unsigned integer (u16)           |
+| Filename         | variable     | UTF-8 encoded original filename             |
+| Ciphertext       | variable     | Encrypted file data (AES-GCM)               |
+
+All fields are concatenated in the above order.
 
 ## Security Notes
 
 - Uses **Argon2** for password-based key derivation (16-byte salt, 32-byte key).
 - Uses **AES-256-GCM** for encryption (12-byte nonce).
 - Passwords and keys are zeroized from memory after use.
-- The salt and nonce are stored unencrypted alongside the ciphertext; this is standard and necessary for decryption.
+- The salt, nonce, and original filename are stored unencrypted in the `.enc` file.
+
 
 
 

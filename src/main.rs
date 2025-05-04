@@ -8,7 +8,7 @@ use rand::rngs::OsRng;
 use rand::RngCore;
 use rpassword::read_password;
 use std::error::Error;
-use std::fs::{self, File};
+use std::fs::{File};
 use std::io::{Read, Write};
 use std::path::Path;
 use std::process;
@@ -136,89 +136,90 @@ fn encrypt_file_to_dir(plaintext_path: &str) -> Result<(), Box<dyn Error>> {
     let salt = generate_salt(16);
     let mut key = derive_key(&password, &salt, 32);
     let nonce = generate_nonce(12);
-
-    // Encrypt
     let ciphertext = encrypt_data(&plaintext, &mut key, &nonce)
         .map_err(|e| format!("Encryption failed: {e}"))?;
 
     // Zeroize key
     key.zeroize();
 
-    // Prepare output directory: same name as file, no extension
     let path = Path::new(plaintext_path);
-    let base = path.file_stem().unwrap();
-    let out_dir = path.parent().unwrap_or_else(|| Path::new("")).join(base);
-    fs::create_dir_all(&out_dir)?;
+    let filename_lossy = path.file_name().unwrap().to_string_lossy();
+    let filename = filename_lossy.as_bytes();
+    let filename_len = filename.len() as u16;
 
-    // Write encrypted data, salt, and nonce
-    let mut f = File::create(out_dir.join("ciphertext.bin"))?;
-    f.write_all(&ciphertext)?;
-    let mut f = File::create(out_dir.join("salt.bin"))?;
+    // Write everything to a single file
+    let out_path = path.with_extension("enc");
+    let mut f = File::create(&out_path)?;
+
+    // Optional: magic bytes
+    f.write_all(b"ENC1")?;
+    // Salt
     f.write_all(&salt)?;
-    let mut f = File::create(out_dir.join("nonce.bin"))?;
+    // Nonce
     f.write_all(&nonce)?;
-    // Save the original filename
-    let mut f = File::create(out_dir.join("original_filename.txt"))?;
-    f.write_all(path.file_name().unwrap().to_string_lossy().as_bytes())?;
+    // Filename length (big-endian)
+    f.write_all(&(filename_len.to_be_bytes()))?;
+    // Filename
+    f.write_all(filename)?;
+    // Ciphertext
+    f.write_all(&ciphertext)?;
 
-    println!(
-        "Encrypted data, salt, and nonce saved in directory: {}",
-        out_dir.display()
-    );
+    println!("Encrypted file written to: {}", out_path.display());
     Ok(())
 }
 
-fn decrypt_dir_to_file(encrypted_dir: &str) -> Result<(), Box<dyn Error>> {
-    // Prepare paths
-    let dir_path = Path::new(encrypted_dir);
-    let ciphertext_path = dir_path.join("ciphertext.bin");
-    let salt_path = dir_path.join("salt.bin");
-    let nonce_path = dir_path.join("nonce.bin");
+fn decrypt_file_from_enc(enc_file_path: &str) -> Result<(), Box<dyn Error>> {
+    let mut f = File::open(enc_file_path)?;
 
-    // Read encrypted data, salt, and nonce
+    // Read and check magic bytes
+    let mut magic = [0u8; 4];
+    f.read_exact(&mut magic)?;
+    if &magic != b"ENC1" {
+        return Err("Invalid file format or magic bytes".into());
+    }
+
+    // Read salt (16 bytes)
+    let mut salt = [0u8; 16];
+    f.read_exact(&mut salt)?;
+
+    // Read nonce (12 bytes)
+    let mut nonce = [0u8; 12];
+    f.read_exact(&mut nonce)?;
+
+    // Read filename length (2 bytes, big-endian)
+    let mut filename_len_bytes = [0u8; 2];
+    f.read_exact(&mut filename_len_bytes)?;
+    let filename_len = u16::from_be_bytes(filename_len_bytes) as usize;
+
+    // Read filename
+    let mut filename_bytes = vec![0u8; filename_len];
+    f.read_exact(&mut filename_bytes)?;
+    let filename = String::from_utf8(filename_bytes)?;
+
+    // Read the rest as ciphertext
     let mut ciphertext = Vec::new();
-    File::open(&ciphertext_path)?.read_to_end(&mut ciphertext)?;
-    let mut salt = Vec::new();
-    File::open(&salt_path)?.read_to_end(&mut salt)?;
-    let mut nonce = Vec::new();
-    File::open(&nonce_path)?.read_to_end(&mut nonce)?;
+    f.read_to_end(&mut ciphertext)?;
 
     // Prompt for password
     println!("Enter password for decryption: ");
     let password = read_password()?;
 
-    // Generate key
+    // Derive key
     let mut key = derive_key(&password, &salt, 32);
 
     // Decrypt
-    let plaintext = match decrypt_data(&ciphertext, &mut key, &nonce) {
-        Ok(pt) => pt,
-        Err(e) => {
-            eprintln!("Decryption failed: {e}");
-            key.zeroize();
-            return Ok(());
-        }
-    };
+    let plaintext = decrypt_data(&ciphertext, &mut key, &nonce)
+        .map_err(|e| format!("Decryption failed: {e}"))?;
 
     // Zeroize key
     key.zeroize();
 
-    // Get original filename
-    let original_filename_path = dir_path.join("original_filename.txt");
-    let original_filename = if original_filename_path.exists() {
-        let mut s = String::new();
-        File::open(&original_filename_path)?.read_to_string(&mut s)?;
-        s.trim().to_string()
-    } else {
-        "decrypted.txt".to_string()
-    };
-
     // Write decrypted file
-    let decrypted_path = dir_path.join(&original_filename);
-    let mut f = File::create(&decrypted_path)?;
-    f.write_all(&plaintext)?;
+    let out_path = Path::new(enc_file_path).with_file_name(filename);
+    let mut out_f = File::create(&out_path)?;
+    out_f.write_all(&plaintext)?;
 
-    println!("Decrypted file written to: {}", decrypted_path.display());
+    println!("Decrypted file written to: {}", out_path.display());
     Ok(())
 }
 
@@ -239,7 +240,7 @@ fn main() {
 
     let result = match args.mode.as_str() {
         "encrypt" | "e" => encrypt_file_to_dir(&args.path),
-        "decrypt" | "d" => decrypt_dir_to_file(&args.path),
+        "decrypt" | "d" => decrypt_file_from_enc(&args.path),
         _ => {
             eprintln!("Unknown mode. Use 'encrypt', 'decrypt', 'e', or 'd'.");
             process::exit(1);

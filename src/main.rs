@@ -2,15 +2,15 @@ use aes_gcm::{
     aead::{Aead, KeyInit},
     Aes256Gcm, Key, Nonce,
 };
-use argon2::Argon2;
+use argon2::{Algorithm, Argon2, Params, Version};
 use clap::Parser;
 use rand::rngs::OsRng;
 use rand::RngCore;
 use rpassword::read_password;
 use std::error::Error;
-use std::fs::{File};
+use std::fs::File;
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process;
 use zeroize::Zeroize;
 
@@ -38,7 +38,16 @@ fn generate_nonce(length: usize) -> Vec<u8> {
 /// # Returns
 /// A vector containing the derived key bytes.
 fn derive_key(password: &str, salt: &[u8], dklen: usize) -> Vec<u8> {
-    let argon2 = Argon2::default();
+    let params = Params::new(
+        256 * 1024, // memory_cost (kibibytes)
+        8,          // time_cost (iterations)
+        4,          // parallelism (lanes)
+        Some(dklen),
+    )
+    .expect("Invalid Argon2 parameters");
+
+    let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+
     let mut key = vec![0u8; dklen];
     argon2
         .hash_password_into(password.as_bytes(), salt, &mut key)

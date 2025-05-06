@@ -1,4 +1,4 @@
-# File Encryption
+# CIPHER: Command-line Interface for Protection, Hardening, and Endpoint Reinforcement
 
 A command-line tool to encrypt and decrypt files using AES-256-GCM and Argon2 password-based key derivation. Encrypted files are stored in a single `.enc` file containing all necessary decryption parameters and the ciphertext.
 

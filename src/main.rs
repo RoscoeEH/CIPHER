@@ -123,54 +123,63 @@ fn decrypt_data(
     Ok(plaintext)
 }
 
-fn encrypt_file_to_dir(plaintext_path: &str) -> Result<(), Box<dyn Error>> {
+fn encrypt_file_to_dir(
+    plaintext_path: &str,
+    output_path: Option<&str>,
+) -> Result<(), Box<dyn Error>> {
     // Read plaintext
     let mut file = File::open(plaintext_path)?;
     let mut plaintext = Vec::new();
     file.read_to_end(&mut plaintext)?;
 
-    // Prompt for password twice
+    // Get password
     println!("Enter password for encryption: ");
     let password1 = read_password()?;
     println!("Re-enter password to verify: ");
     let password2 = read_password()?;
-
     if password1 != password2 {
         eprintln!("Passwords do not match. Aborting.");
         return Err("Passwords do not match.".into());
     }
     let password = password1;
 
-    // Generate salt, key, and nonce
+    // Derive key
     let salt = generate_salt(16);
     let mut key = derive_key(&password, &salt, 32);
-    let nonce = generate_nonce(12);
-    let ciphertext = encrypt_data(&plaintext, &mut key, &nonce)
-        .map_err(|e| format!("Encryption failed: {e}"))?;
+    let nonce_file = generate_nonce(12);
 
-    // Zeroize key
+    // Extract filename
+    let path = Path::new(plaintext_path);
+    let filename_str = path.file_name().unwrap().to_string_lossy();
+    let filename_bytes = filename_str.as_bytes();
+    let filename_len = filename_bytes.len() as u16;
+
+    // Build [len||name||data] buffer
+    let mut data_to_encrypt = Vec::with_capacity(2 + filename_bytes.len() + plaintext.len());
+    data_to_encrypt.extend_from_slice(&filename_len.to_be_bytes());
+    data_to_encrypt.extend_from_slice(filename_bytes);
+    data_to_encrypt.extend_from_slice(&plaintext);
+
+    // Encrypt
+    let ciphertext = encrypt_data(&data_to_encrypt, &mut key, &nonce_file)
+        .map_err(|e| format!("Encryption failed: {e}"))?;
     key.zeroize();
 
-    let path = Path::new(plaintext_path);
-    let filename_lossy = path.file_name().unwrap().to_string_lossy();
-    let filename = filename_lossy.as_bytes();
-    let filename_len = filename.len() as u16;
+    // Determine out_path
+    let out_path = if let Some(name) = output_path {
+        PathBuf::from(format!("{}.enc", name))
+    } else {
+        let filename_without_extension = filename_str
+            .rsplit_once('.')
+            .map_or(filename_str.as_ref(), |(name, _)| name);
+        PathBuf::from(format!("{}.enc", filename_without_extension))
+    };
 
-    // Write everything to a single file
-    let out_path = path.with_extension("enc");
+    // Write [MAGIC||SALT||NONCE||CIPHERTEXT]
     let mut f = File::create(&out_path)?;
-
-    // Optional: magic bytes
     f.write_all(b"ENC1")?;
-    // Salt
     f.write_all(&salt)?;
-    // Nonce
-    f.write_all(&nonce)?;
-    // Filename length (big-endian)
-    f.write_all(&(filename_len.to_be_bytes()))?;
-    // Filename
-    f.write_all(filename)?;
-    // Ciphertext
+    f.write_all(&nonce_file)?;
     f.write_all(&ciphertext)?;
 
     println!("Encrypted file written to: {}", out_path.display());
@@ -180,53 +189,52 @@ fn encrypt_file_to_dir(plaintext_path: &str) -> Result<(), Box<dyn Error>> {
 fn decrypt_file_from_enc(enc_file_path: &str) -> Result<(), Box<dyn Error>> {
     let mut f = File::open(enc_file_path)?;
 
-    // Read and check magic bytes
+    // Read & check magic
     let mut magic = [0u8; 4];
     f.read_exact(&mut magic)?;
     if &magic != b"ENC1" {
         return Err("Invalid file format or magic bytes".into());
     }
 
-    // Read salt (16 bytes)
+    // Read salt/nonce
     let mut salt = [0u8; 16];
+    let mut nonce_file = [0u8; 12];
     f.read_exact(&mut salt)?;
+    f.read_exact(&mut nonce_file)?;
 
-    // Read nonce (12 bytes)
-    let mut nonce = [0u8; 12];
-    f.read_exact(&mut nonce)?;
-
-    // Read filename length (2 bytes, big-endian)
-    let mut filename_len_bytes = [0u8; 2];
-    f.read_exact(&mut filename_len_bytes)?;
-    let filename_len = u16::from_be_bytes(filename_len_bytes) as usize;
-
-    // Read filename
-    let mut filename_bytes = vec![0u8; filename_len];
-    f.read_exact(&mut filename_bytes)?;
-    let filename = String::from_utf8(filename_bytes)?;
-
-    // Read the rest as ciphertext
+    // Read ciphertext
     let mut ciphertext = Vec::new();
     f.read_to_end(&mut ciphertext)?;
 
-    // Prompt for password
+    // Get key
     println!("Enter password for decryption: ");
     let password = read_password()?;
-
-    // Derive key
     let mut key = derive_key(&password, &salt, 32);
 
-    // Decrypt
-    let plaintext = decrypt_data(&ciphertext, &mut key, &nonce)
+    // Decrypt entire blob
+    let decrypted = decrypt_data(&ciphertext, &mut key, &nonce_file)
         .map_err(|e| format!("Decryption failed: {e}"))?;
-
-    // Zeroize key
     key.zeroize();
 
-    // Write decrypted file
+    // Parse
+    if decrypted.len() < 2 {
+        return Err("Decrypted data too short".into());
+    }
+    let filename_len = u16::from_be_bytes([decrypted[0], decrypted[1]]) as usize;
+    let filename_start = 2;
+    let filename_end = filename_start + filename_len;
+    if decrypted.len() < filename_end {
+        return Err("Filename length exceeds decrypted data".into());
+    }
+
+    let filename = String::from_utf8(decrypted[filename_start..filename_end].to_vec())
+        .map_err(|e| format!("Filename UTF-8 error: {e}"))?;
+    let file_contents = &decrypted[filename_end..];
+
+    // Write
     let out_path = Path::new(enc_file_path).with_file_name(filename);
     let mut out_f = File::create(&out_path)?;
-    out_f.write_all(&plaintext)?;
+    out_f.write_all(file_contents)?;
 
     println!("Decrypted file written to: {}", out_path.display());
     Ok(())
@@ -236,19 +244,20 @@ fn decrypt_file_from_enc(enc_file_path: &str) -> Result<(), Box<dyn Error>> {
 #[derive(Parser)]
 #[command(
     name = "File Encryption",
-    about = "Encrypt or decrypt files using AES-GCM and PBKDF2."
+    about = "Encrypt or decrypt files using AES-GCM and Argon2."
 )]
 struct Cli {
     #[arg(value_parser = ["encrypt", "decrypt", "e", "d"])]
     mode: String,
     path: String,
+    output: Option<String>,
 }
 
 fn main() {
     let args = Cli::parse();
 
     let result = match args.mode.as_str() {
-        "encrypt" | "e" => encrypt_file_to_dir(&args.path),
+        "encrypt" | "e" => encrypt_file_to_dir(&args.path, args.output.as_deref()),
         "decrypt" | "d" => decrypt_file_from_enc(&args.path),
         _ => {
             eprintln!("Unknown mode. Use 'encrypt', 'decrypt', 'e', or 'd'.");

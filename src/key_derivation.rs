@@ -1,8 +1,11 @@
 use argon2::{Algorithm, Argon2, Params, Version};
 use pbkdf2::pbkdf2_hmac;
 use sha2::Sha256;
+use std::collections::HashMap;
 
-pub fn argon2_derive_key(
+use crate::constants::*;
+
+fn argon2_derive_key(
     password: &str,
     salt: &[u8],
     dklen: usize,
@@ -37,7 +40,7 @@ pub fn argon2_derive_key(
     key
 }
 
-pub fn pbkdf2_derive_key(password: &str, salt: &[u8], dklen: usize, iters: Option<u32>) -> Vec<u8> {
+fn pbkdf2_derive_key(password: &str, salt: &[u8], dklen: usize, iters: Option<u32>) -> Vec<u8> {
     let iterations = match iters {
         Some(n) => n,
         None => 100_000,
@@ -47,4 +50,28 @@ pub fn pbkdf2_derive_key(password: &str, salt: &[u8], dklen: usize, iters: Optio
     pbkdf2_hmac::<Sha256>(password.as_bytes(), salt, iterations, &mut key);
 
     key
+}
+
+pub fn id_derive_key(
+    alg_id: u8,
+    password: &str,
+    salt: &[u8],
+    dklen: usize,
+    params: HashMap<&str, u32>,
+) -> Vec<u8> {
+    match alg_id {
+        ARGON2_ID => argon2_derive_key(
+            password,
+            salt,
+            dklen,
+            params.get("memory_cost").copied(),
+            params.get("time_cost").copied(),
+            params.get("parallelism").copied(),
+        ),
+        PBKDF2_ID => pbkdf2_derive_key(password, salt, dklen, params.get("iterations").copied()),
+        _ => panic!(
+            "Attempted key derivation with unknown algorithm ID: {}",
+            alg_id
+        ),
+    }
 }

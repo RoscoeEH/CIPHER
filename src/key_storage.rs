@@ -49,12 +49,13 @@ impl HasId for AsymKeyPair {
 /// Represents an symmetric key pair used in cryptographic operations.
 ///
 /// This structure holds the salt so the key can be re-derived, along with metadata
-/// such as an identifier, the derivation algorithm used, creation timestamp, and number of times it has been used.
+/// such as an identifier, the derivation algorithm used, hash of the key, creation timestamp, and number of times it has been used.
 ///
 /// Fields:
 /// - `id`: A unique identifier for the key.
 /// - `salt`: The salt used in generating the key.
 /// - `derivation_method_id`: The KDF algorithm used to derive the key.
+/// - `verification_hash`: A hash of the resulting key for verifying correctness.
 /// - `created`: A UNIX timestamp indicating when the key pair was generated.
 /// = `use_count`: A count of the number of things the key has been used to avoid nonce collisions.
 ///
@@ -65,6 +66,7 @@ pub struct SymKey {
     pub id: String,
     pub salt: Vec<u8>,
     pub derivation_method_id: u8,
+    pub verification_hash: Vec<u8>,
     pub created: u64,
     pub use_count: u32,
 }

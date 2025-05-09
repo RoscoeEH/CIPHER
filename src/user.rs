@@ -1,4 +1,5 @@
 use crate::constants::*;
+use crate::utils::alg_id_to_name;
 use bincode;
 use directories::ProjectDirs;
 use lazy_static::lazy_static;
@@ -70,10 +71,52 @@ pub fn init_profile() -> Result<UserProfile, Box<dyn std::error::Error>> {
             memory_cost: 256 * 10244,
             time_cost: 8,
             parallelism: 4,
-            iterations: 100_000,
+            iterations: 600_000,
         };
 
         set_profile(&default_profile)?;
         Ok(default_profile)
     }
+}
+
+pub fn get_new_profile(new_id: String) -> UserProfile {
+    let mut base_profile = init_profile().unwrap();
+    base_profile.id = new_id;
+    set_profile(&base_profile).expect("Failed to save profile");
+    base_profile
+}
+
+pub fn list_profiles() -> Result<(), Box<dyn std::error::Error>> {
+    let db = PROFILES_DB.lock().unwrap();
+
+    println!("Stored user profiles:\n");
+
+    for entry in db.iterator(rocksdb::IteratorMode::Start) {
+        let (key, value) = entry?; // Result from RocksDB
+        let id = String::from_utf8(key.to_vec())?;
+        let profile: UserProfile = bincode::deserialize(&value)?;
+
+        // Replace numeric IDs with names for display
+        let aead_name = alg_id_to_name(profile.aead_alg_id);
+        let kdf_name = alg_id_to_name(profile.kdf_id);
+
+        println!(
+            "ID: {}\n\
+             AEAD Algorithm: {}\n\
+             KDF: {}\n\
+             Memory Cost: {}\n\
+             Time Cost: {}\n\
+             Parallelism: {}\n\
+             Iterations: {}\n",
+            id,
+            aead_name,
+            kdf_name,
+            profile.memory_cost,
+            profile.time_cost,
+            profile.parallelism,
+            profile.iterations,
+        );
+    }
+
+    Ok(())
 }

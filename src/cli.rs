@@ -1,7 +1,9 @@
 use crate::constants::*;
+use crate::user::*;
 use clap::{Args, Parser, Subcommand};
 use std::error::Error;
 use std::path::Path;
+use std::str::FromStr;
 
 // Validation checks
 fn validate_path(path_str: &str) -> Result<(), Box<dyn Error>> {
@@ -44,6 +46,13 @@ pub enum Command {
 
     /// Decrypt an encrypted file
     Decrypt(DecryptArgs),
+
+    /// Change profile preference
+    Profile(ProfileArgs),
+
+    /// List all existing profiles
+    #[clap(name = "list-profiles")]
+    ListProfiles,
 }
 
 #[derive(Args, Clone)]
@@ -82,7 +91,6 @@ pub struct EncryptArgs {
 }
 
 impl EncryptArgs {
-    // TODO: invalidate commands for irelevant parameters
     pub fn validate(&self) -> Result<(), Box<dyn Error>> {
         match &self.input {
             Some(path) => {
@@ -125,7 +133,6 @@ pub struct DecryptArgs {
 }
 
 impl DecryptArgs {
-    // TODO: invalidate commands for irelevant parameters
     pub fn validate(&self) -> Result<(), Box<dyn Error>> {
         match &self.input {
             Some(path) => {
@@ -142,5 +149,102 @@ impl DecryptArgs {
         }
 
         Ok(())
+    }
+}
+
+#[derive(Args)]
+pub struct ProfileArgs {
+    pub update_field: String,
+    pub value: String,
+    pub profile: Option<String>,
+}
+
+impl ProfileArgs {
+    pub fn validate(&self) -> Result<(), Box<dyn Error>> {
+        let id = self
+            .profile
+            .clone()
+            .unwrap_or_else(|| "Default".to_string());
+
+        let profile = match get_profile(&id)? {
+            Some(p) => p,
+            None => get_new_profile(id.clone()),
+        };
+
+        match self.update_field.as_str() {
+            "memory_cost" => {
+                let value = self
+                    .value
+                    .parse::<u32>()
+                    .map_err(|_| "Invalid memory_cost value")?;
+                let min = 8 * profile.parallelism;
+                let max = if cfg!(target_pointer_width = "64") {
+                    u32::min(u32::MAX, 4 * 1024 * 1024)
+                } else {
+                    u32::min(u32::MAX, 2 * 1024 * 1024)
+                };
+
+                if value < min {
+                    Err(format!("memory_cost must be at least 8 × parallelism ({}).", min).into())
+                } else if value > max {
+                    Err(format!("memory_cost must not exceed {} KiB.", max).into())
+                } else {
+                    Ok(())
+                }
+            }
+
+            "time_cost" => {
+                let value = self
+                    .value
+                    .parse::<u32>()
+                    .map_err(|_| "Invalid time_cost value")?;
+                if value < 1 {
+                    Err("time_cost must be at least 1.".into())
+                } else {
+                    Ok(())
+                }
+            }
+
+            "parallelism" => {
+                let value = self
+                    .value
+                    .parse::<u32>()
+                    .map_err(|_| "Invalid parallelism value")?;
+                if value < 1 {
+                    Err("parallelism must be at least 1.".into())
+                } else if value > (1 << 24) - 1 {
+                    Err("parallelism must not exceed 16,777,215 (2^24 - 1).".into())
+                } else {
+                    Ok(())
+                }
+            }
+
+            "iterations" => {
+                self.value
+                    .parse::<u32>()
+                    .map_err(|_| "Invalid iterations value")?;
+                Ok(())
+            }
+
+            "kdf_id" => {
+                if KDF_NAMES.contains(&self.value.as_str()) {
+                    Ok(())
+                } else {
+                    Err(format!("Invalid kdf_id: must be one of {:?}", KDF_NAMES).into())
+                }
+            }
+
+            "aead_alg_id" => {
+                if AEAD_NAMES.contains(&self.value.as_str()) {
+                    Ok(())
+                } else {
+                    Err(format!("Invalid aead_alg_id: must be one of {:?}", AEAD_NAMES).into())
+                }
+            }
+
+            "id" => Err("'id' cannot be updated.".into()),
+
+            other => Err(format!("'{}' is not a valid field for update.", other).into()),
+        }
     }
 }

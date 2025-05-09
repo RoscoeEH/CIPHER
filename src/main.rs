@@ -15,20 +15,9 @@ pub mod key_storage;
 pub mod random;
 pub mod symmetric_encryption;
 pub mod user;
+pub mod utils;
 
 use clap::Parser;
-
-fn alg_name_to_id(name: &str) -> Result<u8, Box<dyn Error>> {
-    match name.to_lowercase().as_str() {
-        "aes-gcm" => Ok(AES_GCM_ID),
-        "chacha20poly1305" => Ok(CHA_CHA_20_POLY_1305_ID),
-        "rsa" => Ok(RSA_ID),
-        "ecc" => Ok(ECC_ID),
-        "argon2" => Ok(ARGON2_ID),
-        "pbkdf2" => Ok(PBKDF2_ID),
-        _ => Err(format!("Unknown algorithm name: {}", name).into()),
-    }
-}
 
 fn get_password(verify: bool) -> Result<String, Box<dyn Error>> {
     println!("Enter password: ");
@@ -45,6 +34,13 @@ fn get_password(verify: bool) -> Result<String, Box<dyn Error>> {
     Ok(password)
 }
 
+fn parse_u32_or_exit(field: &str, value: &str) -> u32 {
+    value.parse::<u32>().unwrap_or_else(|_| {
+        eprintln!("Invalid number for '{}'", field);
+        std::process::exit(1);
+    })
+}
+
 pub struct DerivedKeyInfo {
     pub kdf_id: u8,
     pub key: Vec<u8>,
@@ -56,7 +52,7 @@ pub fn generate_key_from_args(
     profile: user::UserProfile,
 ) -> DerivedKeyInfo {
     let kdf_id = match args.kdf {
-        Some(ref s) => alg_name_to_id(s.as_str()).unwrap(),
+        Some(ref s) => utils::alg_name_to_id(s.as_str()).unwrap(),
         None => profile.kdf_id,
     };
 
@@ -137,7 +133,7 @@ fn main() {
             let key_ref = &key;
 
             let aead_id = match args.aead {
-                Some(s) => alg_name_to_id(s.as_str()).unwrap(),
+                Some(s) => utils::alg_name_to_id(s.as_str()).unwrap(),
                 None => profile.aead_alg_id,
             };
 
@@ -313,6 +309,62 @@ fn main() {
                 "Decryption complete. Output written to {}",
                 out_path.display()
             );
+        }
+
+        cli::Command::Profile(args) => {
+            if let Err(e) = args.validate() {
+                eprintln!("Invalid profile input: {}", e);
+                std::process::exit(1);
+            }
+
+            let id = args
+                .profile
+                .clone()
+                .unwrap_or_else(|| "Default".to_string());
+
+            let mut profile = match user::get_profile(&id).unwrap() {
+                Some(p) => p,
+                None => user::get_new_profile(id.clone()),
+            };
+
+            match args.update_field.as_str() {
+                "aead_alg_id" => match utils::alg_name_to_id(&args.value) {
+                    Ok(id) => profile.aead_alg_id = id,
+                    Err(e) => {
+                        eprintln!("Invalid aead_alg_id: {}", e);
+                        std::process::exit(1);
+                    }
+                },
+
+                "kdf_id" => match utils::alg_name_to_id(&args.value) {
+                    Ok(id) => profile.kdf_id = id,
+                    Err(e) => {
+                        eprintln!("Invalid kdf_id: {}", e);
+                        std::process::exit(1);
+                    }
+                },
+                "memory_cost" | "time_cost" | "parallelism" | "iterations" => {
+                    let number = parse_u32_or_exit(&args.update_field, &args.value);
+                    match args.update_field.as_str() {
+                        "memory_cost" => profile.memory_cost = number,
+                        "time_cost" => profile.time_cost = number,
+                        "parallelism" => profile.parallelism = number,
+                        "iterations" => profile.iterations = number,
+                        _ => unreachable!(),
+                    }
+                }
+                field => {
+                    eprintln!("Unknown field '{}'. No changes made.", field);
+                    std::process::exit(1);
+                }
+            }
+
+            user::set_profile(&profile).expect("Failed to save updated profile");
+            println!("Updated profile '{}': {:#?}", profile.id, profile);
+        }
+
+        cli::Command::ListProfiles => {
+            user::list_profiles().expect("Failed to list profiles");
         }
     }
 }

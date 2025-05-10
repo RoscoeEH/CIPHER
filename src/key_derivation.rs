@@ -57,7 +57,7 @@ pub fn id_derive_key(
     password: &str,
     salt: &[u8],
     dklen: usize,
-    params: HashMap<&str, u32>,
+    params: &HashMap<String, u32>,
 ) -> Vec<u8> {
     match alg_id {
         ARGON2_ID => argon2_derive_key(

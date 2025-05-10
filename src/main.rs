@@ -1,9 +1,11 @@
 use rpassword::read_password;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::process::exit;
 use zeroize::Zeroize;
 
 pub mod asymmetric_crypto;
@@ -41,11 +43,17 @@ fn parse_u32_or_exit(field: &str, value: &str) -> u32 {
     })
 }
 
+fn hash(data: &[u8]) -> Vec<u8> {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    hasher.finalize().to_vec()
+}
+
 pub struct DerivedKeyInfo {
     pub kdf_id: u8,
     pub key: Vec<u8>,
     pub salt: Vec<u8>,
-    pub params: HashMap<&'static str, u32>,
+    pub params: HashMap<String, u32>,
 }
 pub fn generate_key_from_args(
     args: cli::EncryptArgs,
@@ -59,39 +67,21 @@ pub fn generate_key_from_args(
     let password = get_password(true).unwrap();
     let salt = random::get_salt(); // Vec<u8>
 
-    let mut params: HashMap<&'static str, u32> = HashMap::new();
-
     let key = match kdf_id {
-        ARGON2_ID => {
-            params.insert(
-                "memory_cost",
-                args.memory_cost.unwrap_or(profile.memory_cost),
-            );
-            params.insert("time_cost", args.time_cost.unwrap_or(profile.time_cost));
-            params.insert(
-                "parallelism",
-                args.parallelism.unwrap_or(profile.parallelism),
-            );
-
-            key_derivation::id_derive_key(
-                kdf_id,
-                password.as_str(),
-                &salt,
-                SYM_KEY_LEN,
-                params.clone(),
-            )
-        }
-        PBKDF2_ID => {
-            params.insert("iterations", args.iterations.unwrap_or(profile.iterations));
-
-            key_derivation::id_derive_key(
-                kdf_id,
-                password.as_str(),
-                &salt,
-                SYM_KEY_LEN,
-                params.clone(),
-            )
-        }
+        ARGON2_ID => key_derivation::id_derive_key(
+            kdf_id,
+            password.as_str(),
+            &salt,
+            SYM_KEY_LEN,
+            &profile.params,
+        ),
+        PBKDF2_ID => key_derivation::id_derive_key(
+            kdf_id,
+            password.as_str(),
+            &salt,
+            SYM_KEY_LEN,
+            &profile.params,
+        ),
         _ => {
             panic!("Unsupported KDF algorithm ID: {}", kdf_id);
         }
@@ -101,8 +91,96 @@ pub fn generate_key_from_args(
         kdf_id,
         key,
         salt,
-        params,
+        params: profile.params,
     }
+}
+
+fn gen_asym_key(
+    asym_id: String,
+    password: String,
+    profile_id: String,
+    name: String,
+    bits: usize,
+) -> Result<(), Box<dyn Error>> {
+    let profile = match user::get_profile(profile_id.as_str()).unwrap() {
+        Some(p) => p,
+        None => user::init_profile().unwrap(),
+    };
+    let alg_id = utils::alg_name_to_id(asym_id.as_str()).unwrap();
+
+    let (priv_key, pub_key) = asymmetric_crypto::id_keypair_gen(alg_id, Some(bits)).unwrap();
+
+    let kek_salt_bytes = random::get_salt();
+    // Fix how profiles store params first
+    let kek = key_derivation::id_derive_key(
+        profile.kdf_id,
+        password.as_str(),
+        &kek_salt_bytes,
+        SYM_KEY_LEN,
+        &profile.params,
+    );
+
+    let keypair_to_store = key_storage::AsymKeyPair {
+        id: name,
+        key_type: alg_id,
+        public_key: pub_key,
+        private_key: symmetric_encryption::id_encrypt(
+            profile.aead_alg_id,
+            &kek,
+            &random::get_nonce(),
+            &priv_key,
+        )
+        .unwrap(),
+        kek_salt: kek_salt_bytes,
+        kek_kdf: profile.kdf_id,
+        kek_params: profile.params,
+        kek_aead: profile.aead_alg_id,
+        created: utils::now_as_u64(),
+    };
+    key_storage::store_key(&keypair_to_store).expect("Failed to store keypair");
+    Ok(())
+}
+
+fn gen_sym_key(password: String, profile_id: String, name: String) -> Result<(), Box<dyn Error>> {
+    let salt_vec = random::get_salt();
+    let profile = match user::get_profile(profile_id.as_str()).unwrap() {
+        Some(p) => p,
+        None => user::init_profile().unwrap(),
+    };
+    let params: HashMap<String, u32> = profile.params;
+    let key = key_derivation::id_derive_key(
+        profile.kdf_id,
+        password.as_str(),
+        &salt_vec,
+        SYM_KEY_LEN,
+        &params,
+    );
+    let key_to_store = key_storage::SymKey {
+        id: name,
+        salt: salt_vec,
+        derivation_method_id: profile.kdf_id,
+        derivation_params: params.clone(),
+        verification_hash: hash(&key),
+        created: utils::now_as_u64(),
+        use_count: 0,
+    };
+
+    key_storage::store_key(&key_to_store).expect("Failed to store key");
+    Ok(())
+}
+
+fn does_key_exist(id: String) -> Result<bool, Box<dyn Error>> {
+    // Check if a symmetric or asymmetric key with the same ID already exists
+    let sym_key_exists = match key_storage::get_key::<key_storage::SymKey>(id.as_str()) {
+        Ok(opt) => opt.is_some(),
+        Err(_e) => false,
+    };
+
+    let asym_key_exists = match key_storage::get_key::<key_storage::AsymKeyPair>(id.as_str()) {
+        Ok(opt) => opt.is_some(),
+        Err(_e) => false,
+    };
+    Ok(sym_key_exists || asym_key_exists)
 }
 
 fn read_file(path: &str) -> Result<Vec<u8>, Box<dyn Error>> {
@@ -118,20 +196,56 @@ fn main() {
 
     match cli.command {
         cli::Command::Encrypt(args) => {
-            if let Err(err) = args.validate() {
-                eprintln!("Argument error: {}", err);
-                std::process::exit(1);
-            }
-
+            cli::validate_args(&args);
             let profile = user::init_profile().unwrap();
-            let DerivedKeyInfo {
-                kdf_id,
-                key,
-                salt,
-                params,
-            } = generate_key_from_args(args.clone(), profile.clone());
-            let key_ref = &key;
+            let (kdf_id, key, salt, params) = match args.input_key {
+                Some(input_key_id) => {
+                    // Retrieve the SymKey from the keystore
+                    let mut sym_key =
+                        key_storage::get_key::<key_storage::SymKey>(&input_key_id.to_string())
+                            .unwrap()
+                            .ok_or("Key ID not found in keystore")
+                            .unwrap();
 
+                    // Enforce use count limit
+                    if sym_key.use_count >= SYM_KEY_USE_LIMIT {
+                        println!("Key has exceeded maximum usage limit");
+                        exit(0);
+                    }
+
+                    // Increment use count and save back to keystore
+                    sym_key.use_count += 1;
+                    key_storage::store_key(&sym_key).unwrap();
+
+                    let kdf_id = sym_key.derivation_method_id;
+                    let salt = sym_key.salt.clone();
+                    let params = sym_key.derivation_params.clone();
+
+                    // Derive the key again using the saved parameters
+                    let password = get_password(false).unwrap(); // prompt user for password
+                    let key = key_derivation::id_derive_key(
+                        kdf_id,
+                        &password,
+                        &salt,
+                        SYM_KEY_LEN,
+                        &params,
+                    );
+
+                    (kdf_id, key, salt, params)
+                }
+                None => {
+                    let DerivedKeyInfo {
+                        kdf_id,
+                        key,
+                        salt,
+                        params,
+                    } = generate_key_from_args(args.clone(), profile.clone());
+
+                    (kdf_id, key, salt, params)
+                }
+            };
+
+            let key_ref = &key;
             let aead_id = match args.aead {
                 Some(s) => utils::alg_name_to_id(s.as_str()).unwrap(),
                 None => profile.aead_alg_id,
@@ -201,11 +315,7 @@ fn main() {
         }
 
         cli::Command::Decrypt(args) => {
-            if let Err(err) = args.validate() {
-                eprintln!("Argument error: {}", err);
-                std::process::exit(1);
-            }
-
+            cli::validate_args(&args);
             let in_path = PathBuf::from(args.input.clone().unwrap());
             let mut f = File::open(&in_path).expect("Failed to open encrypted file");
 
@@ -241,18 +351,18 @@ fn main() {
                 ARGON2_ID => {
                     let mut buf = [0u8; 4];
                     f.read_exact(&mut buf).expect("Failed to read memory_cost");
-                    params.insert("memory_cost", u32::from_be_bytes(buf));
+                    params.insert("memory_cost".to_string(), u32::from_be_bytes(buf));
 
                     f.read_exact(&mut buf).expect("Failed to read time_cost");
-                    params.insert("time_cost", u32::from_be_bytes(buf));
+                    params.insert("time_cost".to_string(), u32::from_be_bytes(buf));
 
                     f.read_exact(&mut buf).expect("Failed to read parallelism");
-                    params.insert("parallelism", u32::from_be_bytes(buf));
+                    params.insert("parallelism".to_string(), u32::from_be_bytes(buf));
                 }
                 PBKDF2_ID => {
                     let mut buf = [0u8; 4];
                     f.read_exact(&mut buf).expect("Failed to read iterations");
-                    params.insert("iterations", u32::from_be_bytes(buf));
+                    params.insert("iterations".to_string(), u32::from_be_bytes(buf));
                 }
                 _ => panic!("Unknown KDF ID: {}", kdf_id),
             }
@@ -270,13 +380,7 @@ fn main() {
 
             // === Derive key ===
             let password = get_password(false).expect("Failed to get password");
-            let key = key_derivation::id_derive_key(
-                kdf_id,
-                &password,
-                &salt,
-                SYM_KEY_LEN,
-                params.clone(),
-            );
+            let key = key_derivation::id_derive_key(kdf_id, &password, &salt, SYM_KEY_LEN, &params);
 
             // === Decrypt ===
             let plaintext_with_filename =
@@ -312,11 +416,7 @@ fn main() {
         }
 
         cli::Command::Profile(args) => {
-            if let Err(e) = args.validate() {
-                eprintln!("Invalid profile input: {}", e);
-                std::process::exit(1);
-            }
-
+            cli::validate_args(&args);
             let id = args
                 .profile
                 .clone()
@@ -345,13 +445,7 @@ fn main() {
                 },
                 "memory_cost" | "time_cost" | "parallelism" | "iterations" => {
                     let number = parse_u32_or_exit(&args.update_field, &args.value);
-                    match args.update_field.as_str() {
-                        "memory_cost" => profile.memory_cost = number,
-                        "time_cost" => profile.time_cost = number,
-                        "parallelism" => profile.parallelism = number,
-                        "iterations" => profile.iterations = number,
-                        _ => unreachable!(),
-                    }
+                    profile.params.insert(args.update_field.clone(), number);
                 }
                 field => {
                     eprintln!("Unknown field '{}'. No changes made.", field);
@@ -365,6 +459,72 @@ fn main() {
 
         cli::Command::ListProfiles => {
             user::list_profiles().expect("Failed to list profiles");
+        }
+
+        cli::Command::KeyGen(args) => {
+            cli::validate_args(&args);
+
+            if does_key_exist(args.id.clone()).unwrap() {
+                print!(
+                    "There is already a key with the id: {}. Overwrite? [y/N]: ",
+                    args.id
+                );
+                io::stdout().flush().unwrap();
+
+                let mut input = String::new();
+                io::stdin().read_line(&mut input).unwrap();
+
+                if !input.trim().eq_ignore_ascii_case("y") {
+                    println!("Key generation cancelled.");
+                    exit(0);
+                }
+            }
+
+            // Proceed with key generation
+            let password = get_password(true).expect("Failed to get password.");
+
+            match &args.asymmetric {
+                Some(alg) => {
+                    gen_asym_key(
+                        alg.clone(),
+                        password,
+                        args.profile.clone(),
+                        args.id.clone(),
+                        args.bits,
+                    )
+                    .expect("Failed to generate new key.");
+                }
+                None => {
+                    gen_sym_key(password, args.profile.clone(), args.id.clone())
+                        .expect("Failed to generate new key.");
+                }
+            }
+        }
+        cli::Command::ListKeys => {
+            key_storage::list_keys().expect("Failed to list keys");
+        }
+        cli::Command::Wipe => {
+            print!("Are you sure you want to wipe all data? This action cannot be undone. [y/N]: ");
+            io::stdout().flush().unwrap();
+            let mut input = String::new();
+            io::stdin().read_line(&mut input).unwrap();
+
+            if input.trim().eq_ignore_ascii_case("y") {
+                user::wipe_profiles().unwrap();
+                key_storage::wipe_keystore().unwrap();
+                println!("All data wiped successfully.");
+            } else {
+                println!("Wipe cancelled.");
+            }
+        }
+
+        cli::Command::DeleteKey(args) => {
+            if does_key_exist(args.id.clone()).unwrap() {
+                key_storage::delete_key(args.id.as_str()).expect("Failed to delete key.");
+                println!("Key has been deleted.")
+            } else {
+                println!("Key does not exist.")
+            }
         }
     }
 }

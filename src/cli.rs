@@ -3,7 +3,6 @@ use crate::user::*;
 use clap::{Args, Parser, Subcommand};
 use std::error::Error;
 use std::path::Path;
-use std::str::FromStr;
 
 // Validation checks
 fn validate_path(path_str: &str) -> Result<(), Box<dyn Error>> {
@@ -27,6 +26,27 @@ fn valid_aead(aead: &String) -> Result<(), Box<dyn Error>> {
         return Err(format!("Did not recognize aead: {}", aead).into());
     }
     Ok(())
+}
+
+fn valid_asym(asym: &String) -> Result<(), Box<dyn Error>> {
+    if !ASYM_NAMES.contains(&asym.to_lowercase().as_str()) {
+        return Err(format!("Did not recognize asym: {}", asym).into());
+    }
+    Ok(())
+}
+
+pub trait Validatable {
+    fn validate(&self) -> Result<(), Box<dyn Error>>;
+}
+
+pub fn validate_args<T: Validatable>(args: &T) {
+    if let Err(e) = args.validate() {
+        eprintln!("Invalid input: {}", e);
+        if let Some(source) = e.source() {
+            eprintln!("Caused by: {}", source);
+        }
+        std::process::exit(1);
+    }
 }
 
 #[derive(Parser)]
@@ -53,6 +73,20 @@ pub enum Command {
     /// List all existing profiles
     #[clap(name = "list-profiles")]
     ListProfiles,
+
+    KeyGen(KeyGenArgs),
+
+    /// List all existing profiles
+    #[clap(name = "list-keys")]
+    ListKeys,
+
+    /// Clear all existing keys and profiles
+    #[clap(name = "wipe")]
+    Wipe,
+
+    /// Delete a singluar key
+    #[clap(name = "delete-key")]
+    DeleteKey(DeleteKeyArgs),
 }
 
 #[derive(Args, Clone)]
@@ -79,7 +113,7 @@ pub struct EncryptArgs {
     pub aead: Option<String>,
 
     #[arg(long = "key")]
-    pub input_key: Option<u32>,
+    pub input_key: Option<String>,
 
     // if you want the output copied to clipboard
     #[arg(long = "to-clipboard", default_value_t = false)]
@@ -90,8 +124,8 @@ pub struct EncryptArgs {
     pub from_clipboard: bool,
 }
 
-impl EncryptArgs {
-    pub fn validate(&self) -> Result<(), Box<dyn Error>> {
+impl Validatable for EncryptArgs {
+    fn validate(&self) -> Result<(), Box<dyn Error>> {
         match &self.input {
             Some(path) => {
                 validate_path(path)?;
@@ -101,6 +135,9 @@ impl EncryptArgs {
                     return Err("No input file found.".into());
                 }
             }
+        }
+        if self.input_key.is_some() && self.kdf.is_some() {
+            return Err("Cannot provide both an input key and a KDF — choose one.".into());
         }
         match &self.kdf {
             Some(s) => valid_kdf(s)?,
@@ -132,8 +169,8 @@ pub struct DecryptArgs {
     pub from_clipboard: bool,
 }
 
-impl DecryptArgs {
-    pub fn validate(&self) -> Result<(), Box<dyn Error>> {
+impl Validatable for DecryptArgs {
+    fn validate(&self) -> Result<(), Box<dyn Error>> {
         match &self.input {
             Some(path) => {
                 validate_path(path)?;
@@ -154,13 +191,15 @@ impl DecryptArgs {
 
 #[derive(Args)]
 pub struct ProfileArgs {
+    #[arg(short = 'p', long = "profile")]
+    pub profile: Option<String>,
+    // Profile would be better with a default
     pub update_field: String,
     pub value: String,
-    pub profile: Option<String>,
 }
 
-impl ProfileArgs {
-    pub fn validate(&self) -> Result<(), Box<dyn Error>> {
+impl Validatable for ProfileArgs {
+    fn validate(&self) -> Result<(), Box<dyn Error>> {
         let id = self
             .profile
             .clone()
@@ -177,7 +216,7 @@ impl ProfileArgs {
                     .value
                     .parse::<u32>()
                     .map_err(|_| "Invalid memory_cost value")?;
-                let min = 8 * profile.parallelism;
+                let min = 8 * profile.params.get("parallelism").unwrap();
                 let max = if cfg!(target_pointer_width = "64") {
                     u32::min(u32::MAX, 4 * 1024 * 1024)
                 } else {
@@ -247,4 +286,69 @@ impl ProfileArgs {
             other => Err(format!("'{}' is not a valid field for update.", other).into()),
         }
     }
+}
+
+#[derive(Args)]
+pub struct KeyGenArgs {
+    pub id: String,
+
+    #[arg(short = 's', long = "symmetric", default_value_t = false)]
+    pub symmetric: bool,
+
+    #[arg(short = 'a', long = "asymmetric-alg")]
+    pub asymmetric: Option<String>,
+
+    // Only relevant for rsa currently
+    #[arg(short = 'b', long = "bits", default_value_t = 4096)]
+    pub bits: usize,
+
+    #[arg(short = 'p', long = "profile", default_value_t = String::from("Default"))]
+    pub profile: String,
+}
+
+impl Validatable for KeyGenArgs {
+    fn validate(&self) -> Result<(), Box<dyn Error>> {
+        match &self.asymmetric {
+            Some(s) => {
+                if self.symmetric {
+                    return Err("Must specify symmetric or aymmetric key, not both.".into());
+                }
+                valid_asym(&s)?
+            }
+            None => {
+                if !self.symmetric {
+                    return Err("No key type found.".into());
+                }
+            }
+        }
+        match self.bits {
+            2048 | 3072 | 4096 => {}
+            _ => {
+                return Err(format!(
+                    "Invalid number of bits: {}. Must be 2048, 3072, or 4096",
+                    self.bits
+                )
+                .into())
+            }
+        }
+        match get_profile(self.profile.as_str()) {
+            Ok(Some(_profile)) => {}
+            Ok(None) => {
+                if self.profile.as_str() == "Default" {
+                    init_profile()
+                        .map_err(|e| format!("Failed to initialize default profile: {e}"))?;
+                } else {
+                    return Err(format!("Could not find profile: {}", self.profile).into());
+                }
+            }
+            Err(e) => return Err(e),
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Args)]
+pub struct DeleteKeyArgs {
+    pub id: String,
 }

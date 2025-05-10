@@ -1,14 +1,34 @@
+use crate::utils::*;
 use bincode;
+use chrono::{DateTime, NaiveDateTime, Utc};
+use directories::ProjectDirs;
 use lazy_static::lazy_static;
-use rocksdb::{IteratorMode, DB};
+use rocksdb::{IteratorMode, Options, DB};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::error::Error;
+use std::path::PathBuf;
 use std::sync::Mutex;
+use zeroize::Zeroize;
+
+fn get_keystore_path() -> PathBuf {
+    let project_dirs = ProjectDirs::from("com", "cipher", "cipher")
+        .expect("Could not determine project directories");
+
+    let keystore_dir = project_dirs.data_local_dir().join("keystore");
+
+    std::fs::create_dir_all(&keystore_dir).expect("Failed to create keystore directory");
+
+    keystore_dir
+}
 
 // Rocksdb database for storing keys
 lazy_static! {
-    static ref KEY_STORE: Mutex<DB> = Mutex::new(DB::open_default("./cipher_keystore").unwrap());
+    static ref KEY_STORE: Mutex<DB> = {
+        let path = get_keystore_path();
+        Mutex::new(DB::open_default(path).unwrap())
+    };
 }
 
 // Allows for simplifictaion of storing function
@@ -37,6 +57,10 @@ pub struct AsymKeyPair {
     pub key_type: u8,
     pub public_key: Vec<u8>,
     pub private_key: Vec<u8>,
+    pub kek_salt: Vec<u8>,
+    pub kek_kdf: u8,
+    pub kek_params: HashMap<String, u32>,
+    pub kek_aead: u8,
     pub created: u64,
 }
 
@@ -66,6 +90,7 @@ pub struct SymKey {
     pub id: String,
     pub salt: Vec<u8>,
     pub derivation_method_id: u8,
+    pub derivation_params: HashMap<String, u32>,
     pub verification_hash: Vec<u8>,
     pub created: u64,
     pub use_count: u32,
@@ -141,38 +166,67 @@ pub fn get_key<T: DeserializeOwned>(id: &str) -> Result<Option<T>, Box<dyn std::
     }
 }
 
-/// Retrieves and deserializes all key objects from the key store.
-///
-/// This function iterates over all entries in the global key store,
-/// deserializes each one using `bincode`, and returns them as a list.
-///
-/// # Returns
-/// - `Ok(Vec<T>)` containing all successfully deserialized key objects.
-/// - `Err(Box<dyn std::error::Error>)` if any deserialization or database access fails.
-///
-/// # Errors
-/// This function returns an error if:
-/// - Deserialization using `bincode` fails for any entry.
-/// - Iteration over the key store (`KEY_STORE`) fails.
-///
-/// # Panics
-/// This function will panic if locking the global `KEY_STORE` mutex fails.
-pub fn get_key_list<T: DeserializeOwned>() -> Result<Vec<T>, Box<dyn Error>> {
-    let mut keys: VecDeque<T> = VecDeque::new();
-
+pub fn list_keys() -> Result<(), Box<dyn Error>> {
     let db = KEY_STORE.lock().unwrap();
+    let iter = db.iterator(rocksdb::IteratorMode::Start);
 
-    let iter = db.iterator(IteratorMode::Start);
-
+    println!("Stored Keys:");
     for result in iter {
-        match result {
-            Ok((_, value)) => {
-                let deserialized: T = bincode::deserialize(&value)?;
-                keys.push_back(deserialized);
-            }
-            Err(e) => return Err(Box::new(e)), // Convert rocksdb::Error to Box<dyn Error>
+        let (_key, value) = result?;
+
+        // Try to deserialize as AsymKeyPair
+        if let Ok(asym) = bincode::deserialize::<AsymKeyPair>(&value) {
+            let datetime = u64_to_datetime(asym.created);
+            println!(
+                    "- ID: {}\n  Type: Asymmetric (type ID {})\n  Created: {}\n  Public Key Length: {}\n",
+                    asym.id,
+                    asym.key_type,
+                    datetime,
+                    asym.public_key.len(),
+                );
+            continue;
         }
+
+        // Try to deserialize as SymKey
+        if let Ok(sym) = bincode::deserialize::<SymKey>(&value) {
+            let datetime = u64_to_datetime(sym.created);
+            println!(
+                "- ID: {}\n  Type: Symmetric (KDF ID {})\n  Created: {}\n  Use Count: {}\n",
+                sym.id, sym.derivation_method_id, datetime, sym.use_count,
+            );
+            continue;
+        }
+
+        println!("- Warning: Unknown key format encountered.");
     }
 
-    Ok(keys.into()) // Return a Vec
+    Ok(())
+}
+
+pub fn wipe_keystore() -> Result<(), Box<dyn Error>> {
+    let keystore_path = get_keystore_path();
+
+    // Delete the existing keystore database
+    DB::destroy(&Options::default(), &keystore_path)?;
+
+    // Recreate the database to ensure it exists for future use
+    DB::open_default(&keystore_path)?;
+
+    println!("Keystore database wiped and reinitialized.");
+    Ok(())
+}
+
+/// Deletes a single key by its ID from the keystore.
+///
+/// # Arguments
+/// * `id` – the identifier of the key to remove
+///
+/// # Returns
+/// * `Ok(())` if the delete succeeded (even if the key didn't exist)
+/// * `Err(_)` if the underlying RocksDB delete failed
+pub fn delete_key(id: &str) -> Result<(), Box<dyn Error>> {
+    let db = KEY_STORE.lock().unwrap();
+    db.delete(id.as_bytes())
+        .map_err(|e| Box::new(e) as Box<dyn Error>)?;
+    Ok(())
 }

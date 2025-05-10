@@ -3,8 +3,10 @@ use crate::utils::alg_id_to_name;
 use bincode;
 use directories::ProjectDirs;
 use lazy_static::lazy_static;
-use rocksdb::DB;
+use rocksdb::{Options, DB};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::error::Error;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -28,15 +30,13 @@ lazy_static! {
     };
 }
 
+// The params should be a single hashmap instead of individual values or a struct for each alg
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct UserProfile {
     pub id: String,
     pub aead_alg_id: u8,
     pub kdf_id: u8,
-    pub memory_cost: u32,
-    pub time_cost: u32,
-    pub parallelism: u32,
-    pub iterations: u32,
+    pub params: HashMap<String, u32>,
 }
 
 pub fn set_profile(profile: &UserProfile) -> Result<(), Box<dyn std::error::Error>> {
@@ -64,14 +64,20 @@ pub fn init_profile() -> Result<UserProfile, Box<dyn std::error::Error>> {
     if let Some(profile) = get_profile(default_id)? {
         Ok(profile)
     } else {
+        let params: HashMap<String, u32> = [
+            ("memory_cost".to_string(), 256 * 1024),
+            ("time_cost".to_string(), 8),
+            ("parallelism".to_string(), 4),
+            ("iterations".to_string(), 600_000),
+        ]
+        .into_iter()
+        .collect();
+
         let default_profile = UserProfile {
             id: default_id.to_string(),
             aead_alg_id: CHA_CHA_20_POLY_1305_ID,
             kdf_id: ARGON2_ID,
-            memory_cost: 256 * 10244,
-            time_cost: 8,
-            parallelism: 4,
-            iterations: 600_000,
+            params,
         };
 
         set_profile(&default_profile)?;
@@ -100,6 +106,9 @@ pub fn list_profiles() -> Result<(), Box<dyn std::error::Error>> {
         let aead_name = alg_id_to_name(profile.aead_alg_id);
         let kdf_name = alg_id_to_name(profile.kdf_id);
 
+        // Helper to get params or fallback to 0
+        let get_param = |key: &str| profile.params.get(key).copied().unwrap_or(0);
+
         println!(
             "ID: {}\n\
              AEAD Algorithm: {}\n\
@@ -111,12 +120,28 @@ pub fn list_profiles() -> Result<(), Box<dyn std::error::Error>> {
             id,
             aead_name,
             kdf_name,
-            profile.memory_cost,
-            profile.time_cost,
-            profile.parallelism,
-            profile.iterations,
+            get_param("memory_cost"),
+            get_param("time_cost"),
+            get_param("parallelism"),
+            get_param("iterations"),
         );
     }
 
+    Ok(())
+}
+
+pub fn wipe_profiles() -> Result<(), Box<dyn Error>> {
+    let db_path = get_db_path();
+
+    // Remove everything under that path
+    DB::destroy(&Options::default(), &db_path)?;
+
+    // Recreate an empty DB at the same location
+    DB::open_default(&db_path)?;
+
+    println!(
+        "Profiles database wiped and reinitialized at {}",
+        db_path.display()
+    );
     Ok(())
 }

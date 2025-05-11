@@ -3,8 +3,6 @@ use aes_gcm::Aes256Gcm;
 use chacha20poly1305::ChaCha20Poly1305;
 use typenum::Unsigned;
 
-use zeroize::Zeroizing;
-
 use crate::constants::*;
 
 /// Base function for AEAD encryption and decryption.
@@ -48,7 +46,7 @@ where
         );
     }
 
-    let key_arr = Zeroizing::new(GenericArray::clone_from_slice(key));
+    let key_arr = GenericArray::clone_from_slice(key);
     let cipher = C::new(&key_arr);
 
     let aad = aad.unwrap_or(&[]); // Default to empty AAD if not provided

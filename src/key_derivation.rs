@@ -1,12 +1,13 @@
 use argon2::{Algorithm, Argon2, Params, Version};
 use pbkdf2::pbkdf2_hmac;
+use secrecy::{ExposeSecret, Secret};
 use sha2::Sha256;
 use std::collections::HashMap;
 
 use crate::constants::*;
 
 fn argon2_derive_key(
-    password: &str,
+    password: Secret<String>,
     salt: &[u8],
     dklen: usize,
     mem_cost: Option<u32>,
@@ -34,27 +35,37 @@ fn argon2_derive_key(
 
     let mut key = vec![0u8; dklen];
     argon2
-        .hash_password_into(password.as_bytes(), salt, &mut key)
+        .hash_password_into(password.expose_secret().as_bytes(), salt, &mut key)
         .expect("Argon2 hashing failed");
 
     key
 }
 
-fn pbkdf2_derive_key(password: &str, salt: &[u8], dklen: usize, iters: Option<u32>) -> Vec<u8> {
+fn pbkdf2_derive_key(
+    password: Secret<String>,
+    salt: &[u8],
+    dklen: usize,
+    iters: Option<u32>,
+) -> Vec<u8> {
     let iterations = match iters {
         Some(n) => n,
         None => 100_000,
     };
 
     let mut key = vec![0u8; dklen];
-    pbkdf2_hmac::<Sha256>(password.as_bytes(), salt, iterations, &mut key);
+    pbkdf2_hmac::<Sha256>(
+        password.expose_secret().as_bytes(),
+        salt,
+        iterations,
+        &mut key,
+    );
 
     key
 }
 
 pub fn id_derive_key(
     alg_id: u8,
-    password: &str,
+    password: Secret<String>,
     salt: &[u8],
     dklen: usize,
     params: &HashMap<String, u32>,

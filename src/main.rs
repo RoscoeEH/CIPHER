@@ -1,4 +1,5 @@
 use rpassword::read_password;
+use secrecy::{ExposeSecret, Secret};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::error::Error;
@@ -6,7 +7,6 @@ use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::process::exit;
-use zeroize::Zeroize;
 
 pub mod asymmetric_crypto;
 pub mod constants;
@@ -21,14 +21,14 @@ pub mod utils;
 
 use clap::Parser;
 
-fn get_password(verify: bool) -> Result<String, Box<dyn Error>> {
+fn get_password(verify: bool) -> Result<Secret<String>, Box<dyn Error>> {
     println!("Enter password: ");
-    let password = read_password()?;
+    let password = Secret::new(read_password()?);
 
     if verify {
         println!("Re-enter password: ");
-        let verify_password = read_password()?;
-        if verify_password != password {
+        let verify_password = Secret::new(read_password()?);
+        if verify_password.expose_secret() != password.expose_secret() {
             return Err("The passwords did not match.".into());
         }
     }
@@ -68,20 +68,12 @@ pub fn generate_key_from_args(
     let salt = random::get_salt(); // Vec<u8>
 
     let key = match kdf_id {
-        ARGON2_ID => key_derivation::id_derive_key(
-            kdf_id,
-            password.as_str(),
-            &salt,
-            SYM_KEY_LEN,
-            &profile.params,
-        ),
-        PBKDF2_ID => key_derivation::id_derive_key(
-            kdf_id,
-            password.as_str(),
-            &salt,
-            SYM_KEY_LEN,
-            &profile.params,
-        ),
+        ARGON2_ID => {
+            key_derivation::id_derive_key(kdf_id, password, &salt, SYM_KEY_LEN, &profile.params)
+        }
+        PBKDF2_ID => {
+            key_derivation::id_derive_key(kdf_id, password, &salt, SYM_KEY_LEN, &profile.params)
+        }
         _ => {
             panic!("Unsupported KDF algorithm ID: {}", kdf_id);
         }
@@ -97,7 +89,7 @@ pub fn generate_key_from_args(
 
 pub fn derive_key_from_stored(
     sym_key: &mut key_storage::SymKey,
-    password: &str,
+    password: Secret<String>,
 ) -> Result<DerivedKeyInfo, String> {
     let derived = key_derivation::id_derive_key(
         sym_key.derivation_method_id,
@@ -125,7 +117,7 @@ pub fn derive_key_from_stored(
 
 fn gen_asym_key(
     asym_id: String,
-    password: String,
+    password: Secret<String>,
     profile_id: String,
     name: String,
     bits: usize,
@@ -142,7 +134,7 @@ fn gen_asym_key(
     // Fix how profiles store params first
     let kek = key_derivation::id_derive_key(
         profile.kdf_id,
-        password.as_str(),
+        password,
         &kek_salt_bytes,
         SYM_KEY_LEN,
         &profile.params,
@@ -170,20 +162,19 @@ fn gen_asym_key(
     Ok(())
 }
 
-fn gen_sym_key(password: String, profile_id: String, name: String) -> Result<(), Box<dyn Error>> {
+fn gen_sym_key(
+    password: Secret<String>,
+    profile_id: String,
+    name: String,
+) -> Result<(), Box<dyn Error>> {
     let salt_vec = random::get_salt();
     let profile = match user::get_profile(profile_id.as_str()).unwrap() {
         Some(p) => p,
         None => user::init_profile().unwrap(),
     };
     let params: HashMap<String, u32> = profile.params;
-    let key = key_derivation::id_derive_key(
-        profile.kdf_id,
-        password.as_str(),
-        &salt_vec,
-        SYM_KEY_LEN,
-        &params,
-    );
+    let key =
+        key_derivation::id_derive_key(profile.kdf_id, password, &salt_vec, SYM_KEY_LEN, &params);
     let key_to_store = key_storage::SymKey {
         id: name,
         salt: salt_vec,
@@ -318,7 +309,7 @@ fn main() {
                                     .unwrap();
 
                             let password = get_password(false).expect("Failed to get password");
-                            derive_key_from_stored(&mut sym_key, &password)
+                            derive_key_from_stored(&mut sym_key, password)
                                 .expect("Failed to derive key from stored key")
                         }
                         None => generate_key_from_args(&args, &profile),
@@ -461,7 +452,7 @@ fn main() {
                     let password = get_password(false).expect("Failed to get password");
                     let key = key_derivation::id_derive_key(
                         kdf_id,
-                        &password,
+                        password,
                         &salt,
                         SYM_KEY_LEN,
                         &params,
@@ -542,7 +533,7 @@ fn main() {
                     let kek_password = get_password(false).expect("Failed to get password");
                     let kek = key_derivation::id_derive_key(
                         keypair.kek_kdf,
-                        &kek_password,
+                        kek_password,
                         &keypair.kek_salt,
                         SYM_KEY_LEN,
                         &keypair.kek_params,
@@ -745,7 +736,7 @@ fn main() {
             let kek_password = get_password(false).unwrap();
             let kek = key_derivation::id_derive_key(
                 keypair.kek_kdf,
-                &kek_password,
+                kek_password,
                 &keypair.kek_salt,
                 SYM_KEY_LEN,
                 &keypair.kek_params,

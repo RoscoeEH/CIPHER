@@ -1,16 +1,13 @@
 use crate::utils::*;
 use bincode;
-use chrono::{DateTime, NaiveDateTime, Utc};
 use directories::ProjectDirs;
 use lazy_static::lazy_static;
-use rocksdb::{IteratorMode, Options, DB};
+use rocksdb::{Options, DB};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::collections::HashMap;
-use std::collections::VecDeque;
 use std::error::Error;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use zeroize::Zeroize;
 
 fn get_keystore_path() -> PathBuf {
     let project_dirs = ProjectDirs::from("com", "cipher", "cipher")
@@ -56,7 +53,7 @@ pub struct AsymKeyPair {
     pub id: String,
     pub key_type: u8,
     pub public_key: Vec<u8>,
-    pub private_key: Vec<u8>,
+    pub private_key: Vec<u8>, // Store encrypted
     pub kek_salt: Vec<u8>,
     pub kek_kdf: u8,
     pub kek_params: HashMap<String, u32>,
@@ -155,14 +152,13 @@ pub fn store_key<T: Serialize + HasId>(key: &T) -> Result<(), Box<dyn std::error
 /// This function will panic if locking the global `KEY_STORE` mutex fails.
 pub fn get_key<T: DeserializeOwned>(id: &str) -> Result<Option<T>, Box<dyn std::error::Error>> {
     let db = KEY_STORE.lock().unwrap();
-
-    match db.get(id)? {
-        Some(serialized) => {
-            let deserialized: T = bincode::deserialize(&serialized)
-                .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
-            Ok(Some(deserialized))
-        }
-        None => Ok(None),
+    match db.get(id) {
+        Ok(Some(serialized)) => match bincode::deserialize::<T>(&serialized) {
+            Ok(deserialized) => Ok(Some(deserialized)),
+            Err(e) => Err(Box::new(e)),
+        },
+        Ok(None) => Ok(None),
+        Err(e) => Err(Box::new(e)),
     }
 }
 

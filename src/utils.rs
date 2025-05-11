@@ -1,5 +1,5 @@
 use crate::constants::*;
-use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono::{DateTime, Utc};
 use std::error::Error;
 
 pub fn alg_name_to_id(name: &str) -> Result<u8, Box<dyn Error>> {

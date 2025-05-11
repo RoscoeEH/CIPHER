@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::fs::File;
 use std::io::{self, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::exit;
 use zeroize::Zeroize;
 
@@ -56,8 +56,8 @@ pub struct DerivedKeyInfo {
     pub params: HashMap<String, u32>,
 }
 pub fn generate_key_from_args(
-    args: cli::EncryptArgs,
-    profile: user::UserProfile,
+    args: &cli::EncryptArgs,
+    profile: &user::UserProfile,
 ) -> DerivedKeyInfo {
     let kdf_id = match args.kdf {
         Some(ref s) => utils::alg_name_to_id(s.as_str()).unwrap(),
@@ -91,8 +91,36 @@ pub fn generate_key_from_args(
         kdf_id,
         key,
         salt,
-        params: profile.params,
+        params: profile.params.clone(),
     }
+}
+
+pub fn derive_key_from_stored(
+    sym_key: &mut key_storage::SymKey,
+    password: &str,
+) -> Result<DerivedKeyInfo, String> {
+    let derived = key_derivation::id_derive_key(
+        sym_key.derivation_method_id,
+        password,
+        &sym_key.salt,
+        SYM_KEY_LEN,
+        &sym_key.derivation_params,
+    );
+
+    let derived_hash = Sha256::digest(&derived);
+    if derived_hash[..] != sym_key.verification_hash[..] {
+        return Err("Key verification failed".into());
+    }
+
+    sym_key.use_count += 1;
+    key_storage::store_key(sym_key).map_err(|e| format!("Store error: {e}"))?;
+
+    Ok(DerivedKeyInfo {
+        kdf_id: sym_key.derivation_method_id,
+        key: derived,
+        salt: sym_key.salt.clone(),
+        params: sym_key.derivation_params.clone(),
+    })
 }
 
 fn gen_asym_key(
@@ -198,31 +226,209 @@ fn main() {
         cli::Command::Encrypt(args) => {
             cli::validate_args(&args);
             let profile = user::init_profile().unwrap();
-            let (kdf_id, key, salt, params) = match args.input_key {
-                Some(input_key_id) => {
-                    // Retrieve the SymKey from the keystore
-                    let mut sym_key =
-                        key_storage::get_key::<key_storage::SymKey>(&input_key_id.to_string())
-                            .unwrap()
-                            .ok_or("Key ID not found in keystore")
+
+            let input_path = PathBuf::from(args.input.clone().unwrap());
+            let filename = input_path.file_name().unwrap().to_str().unwrap();
+            let filename_bytes = filename.as_bytes();
+            let filename_len = filename_bytes.len() as u16;
+
+            // === Read and prepare plaintext ===
+            let mut plaintext = read_file(input_path.to_str().unwrap()).unwrap();
+            plaintext.extend_from_slice(filename_bytes); // Append filename for recovery
+
+            // === Determine output path ===
+            let out_path = match args.output {
+                Some(ref path) => {
+                    let mut p = PathBuf::from(path);
+                    p.set_extension("enc");
+                    p
+                }
+                None => {
+                    let mut p = PathBuf::from(args.input.clone().unwrap());
+                    p.set_extension("enc");
+                    p
+                }
+            };
+
+            match args.asym {
+                true => {
+                    // === Asymmetric encryption ===
+                    let input_key_id = args
+                        .input_key
+                        .clone()
+                        .expect("Missing input key ID for asymmetric encryption");
+
+                    let keypair: key_storage::AsymKeyPair = key_storage::get_key(&input_key_id)
+                        .unwrap()
+                        .ok_or("Key ID not found in keystore")
+                        .unwrap();
+
+                    let sym_alg_id = match args.aead {
+                        Some(ref a) => utils::alg_name_to_id(a).unwrap(),
+                        None => profile.aead_alg_id,
+                    };
+
+                    let alg_id = keypair.key_type;
+                    let pub_key = &keypair.public_key;
+
+                    let ciphertext = asymmetric_crypto::id_asym_enc(
+                        alg_id,
+                        pub_key,
+                        &plaintext,
+                        Some(sym_alg_id),
+                    )
+                    .unwrap();
+
+                    let mut f = File::create(&out_path).expect("Failed to create output file");
+
+                    // === Write header: MAGIC | ALG_ID | SYM_ALG_ID | KEY_ID_LEN | KEY_ID | FILENAME_LEN ===
+                    let key_id_bytes = keypair.id.as_bytes();
+                    let key_id_len = key_id_bytes.len() as u16;
+
+                    f.write_all(b"ENC2").expect("Failed to write magic");
+                    f.write_all(&[alg_id]).expect("Failed to write alg_id");
+                    f.write_all(&[sym_alg_id])
+                        .expect("Failed to write sym_alg_id");
+
+                    f.write_all(&key_id_len.to_be_bytes())
+                        .expect("Failed to write key ID length");
+                    f.write_all(key_id_bytes).expect("Failed to write key ID");
+
+                    f.write_all(&filename_len.to_be_bytes())
+                        .expect("Failed to write filename length");
+
+                    f.write_all(&ciphertext)
+                        .expect("Failed to write ciphertext");
+
+                    println!(
+                        "Asymmetric encrypted file written to {}",
+                        out_path.display()
+                    );
+                }
+
+                false => {
+                    // === Symmetric encryption ===
+                    let key_info = match args.input_key {
+                        Some(ref input_key_id) => {
+                            let mut sym_key: key_storage::SymKey =
+                                key_storage::get_key(input_key_id)
+                                    .unwrap()
+                                    .ok_or("Key ID not found")
+                                    .unwrap();
+
+                            let password = get_password(false).expect("Failed to get password");
+                            derive_key_from_stored(&mut sym_key, &password)
+                                .expect("Failed to derive key from stored key")
+                        }
+                        None => generate_key_from_args(&args, &profile),
+                    };
+
+                    let key_ref = &key_info.key;
+                    let kdf_id = key_info.kdf_id;
+                    let salt = &key_info.salt;
+                    let params = &key_info.params;
+
+                    let aead_id = match args.aead {
+                        Some(ref s) => utils::alg_name_to_id(s).unwrap(),
+                        None => profile.aead_alg_id,
+                    };
+
+                    let nonce = random::get_nonce();
+                    let ciphertext =
+                        symmetric_encryption::id_encrypt(aead_id, key_ref, &nonce, &plaintext)
                             .unwrap();
 
-                    // Enforce use count limit
-                    if sym_key.use_count >= SYM_KEY_USE_LIMIT {
-                        println!("Key has exceeded maximum usage limit");
-                        exit(0);
+                    let mut f = File::create(&out_path).expect("Failed to create output file");
+
+                    // === Header: MAGIC | KDF_ID | AEAD_ID | SALT_LEN | SALT | KDF PARAMS | FILENAME_LEN
+                    f.write_all(b"ENC1").unwrap();
+                    f.write_all(&[kdf_id, aead_id]).unwrap();
+                    f.write_all(&(salt.len() as u32).to_be_bytes()).unwrap();
+                    f.write_all(salt).unwrap();
+
+                    match kdf_id {
+                        ARGON2_ID => {
+                            f.write_all(&params["memory_cost"].to_be_bytes()).unwrap();
+                            f.write_all(&params["time_cost"].to_be_bytes()).unwrap();
+                            f.write_all(&params["parallelism"].to_be_bytes()).unwrap();
+                        }
+                        PBKDF2_ID => {
+                            f.write_all(&params["iterations"].to_be_bytes()).unwrap();
+                        }
+                        _ => panic!("Unknown KDF"),
                     }
 
-                    // Increment use count and save back to keystore
-                    sym_key.use_count += 1;
-                    key_storage::store_key(&sym_key).unwrap();
+                    f.write_all(&filename_len.to_be_bytes()).unwrap();
+                    f.write_all(&ciphertext).unwrap();
 
-                    let kdf_id = sym_key.derivation_method_id;
-                    let salt = sym_key.salt.clone();
-                    let params = sym_key.derivation_params.clone();
+                    println!("Symmetric encrypted file written to {}", out_path.display());
+                }
+            };
+        }
 
-                    // Derive the key again using the saved parameters
-                    let password = get_password(false).unwrap(); // prompt user for password
+        cli::Command::Decrypt(args) => {
+            cli::validate_args(&args);
+            let in_path = PathBuf::from(args.input.clone().unwrap());
+            let mut f = File::open(&in_path).expect("Failed to open encrypted file");
+
+            // === Read magic header ===
+            let mut magic = [0u8; 4];
+            f.read_exact(&mut magic)
+                .expect("Failed to read magic bytes");
+
+            match &magic {
+                b"ENC1" => {
+                    // === Symmetric decryption ===
+                    let mut kdf_id_buf = [0u8; 1];
+                    f.read_exact(&mut kdf_id_buf)
+                        .expect("Failed to read kdf_id");
+                    let kdf_id = kdf_id_buf[0];
+
+                    let mut aead_id_buf = [0u8; 1];
+                    f.read_exact(&mut aead_id_buf)
+                        .expect("Failed to read aead_id");
+                    let aead_id = aead_id_buf[0];
+
+                    let mut salt_len_buf = [0u8; 4];
+                    f.read_exact(&mut salt_len_buf)
+                        .expect("Failed to read salt length");
+                    let salt_len = u32::from_be_bytes(salt_len_buf) as usize;
+
+                    let mut salt = vec![0u8; salt_len];
+                    f.read_exact(&mut salt).expect("Failed to read salt");
+
+                    // === KDF parameters ===
+                    let mut params = HashMap::new();
+                    match kdf_id {
+                        ARGON2_ID => {
+                            let mut buf = [0u8; 4];
+                            f.read_exact(&mut buf).expect("Failed to read memory_cost");
+                            params.insert("memory_cost".to_string(), u32::from_be_bytes(buf));
+
+                            f.read_exact(&mut buf).expect("Failed to read time_cost");
+                            params.insert("time_cost".to_string(), u32::from_be_bytes(buf));
+
+                            f.read_exact(&mut buf).expect("Failed to read parallelism");
+                            params.insert("parallelism".to_string(), u32::from_be_bytes(buf));
+                        }
+                        PBKDF2_ID => {
+                            let mut buf = [0u8; 4];
+                            f.read_exact(&mut buf).expect("Failed to read iterations");
+                            params.insert("iterations".to_string(), u32::from_be_bytes(buf));
+                        }
+                        _ => panic!("Unknown KDF ID: {}", kdf_id),
+                    }
+
+                    let mut filename_len_buf = [0u8; 2];
+                    f.read_exact(&mut filename_len_buf)
+                        .expect("Failed to read filename length");
+                    let filename_len = u16::from_be_bytes(filename_len_buf) as usize;
+
+                    let mut ciphertext = Vec::new();
+                    f.read_to_end(&mut ciphertext)
+                        .expect("Failed to read ciphertext");
+
+                    let password = get_password(false).expect("Failed to get password");
                     let key = key_derivation::id_derive_key(
                         kdf_id,
                         &password,
@@ -231,188 +437,129 @@ fn main() {
                         &params,
                     );
 
-                    (kdf_id, key, salt, params)
+                    let plaintext_with_filename =
+                        symmetric_encryption::id_decrypt(aead_id, &key, &ciphertext)
+                            .expect("Decryption failed");
+
+                    let total_len = plaintext_with_filename.len();
+                    if filename_len > total_len {
+                        panic!("Corrupted data: filename length exceeds decrypted content size");
+                    }
+
+                    let filename_start = total_len - filename_len;
+                    let file_data = &plaintext_with_filename[..filename_start];
+                    let original_filename =
+                        String::from_utf8_lossy(&plaintext_with_filename[filename_start..]);
+
+                    let out_path = match args.output {
+                        Some(ref path) => PathBuf::from(path),
+                        None => PathBuf::from(original_filename.to_string()),
+                    };
+
+                    let mut out_file =
+                        File::create(&out_path).expect("Failed to create output file");
+                    out_file
+                        .write_all(file_data)
+                        .expect("Failed to write decrypted data");
+
+                    println!(
+                        "Decryption complete. Output written to {}",
+                        out_path.display()
+                    );
                 }
-                None => {
-                    let DerivedKeyInfo {
-                        kdf_id,
-                        key,
-                        salt,
-                        params,
-                    } = generate_key_from_args(args.clone(), profile.clone());
+                b"ENC2" => {
+                    // === Asymmetric decryption ===
+                    let mut alg_id_buf = [0u8; 1];
+                    f.read_exact(&mut alg_id_buf)
+                        .expect("Failed to read alg_id");
+                    let alg_id = alg_id_buf[0];
 
-                    (kdf_id, key, salt, params)
-                }
-            };
+                    let mut sym_alg_id_buf = [0u8; 1];
+                    f.read_exact(&mut sym_alg_id_buf)
+                        .expect("Failed to read sym_alg_id");
+                    let sym_alg_id = sym_alg_id_buf[0];
 
-            let key_ref = &key;
-            let aead_id = match args.aead {
-                Some(s) => utils::alg_name_to_id(s.as_str()).unwrap(),
-                None => profile.aead_alg_id,
-            };
+                    let mut key_id_len_buf = [0u8; 2];
+                    f.read_exact(&mut key_id_len_buf)
+                        .expect("Failed to read key ID length");
+                    let key_id_len = u16::from_be_bytes(key_id_len_buf) as usize;
 
-            let input_path = PathBuf::from(args.input.clone().unwrap());
-            let original_filename = input_path.file_name().unwrap().to_str().unwrap();
-            let filename_bytes = original_filename.as_bytes();
-            let filename_len = filename_bytes.len() as u16;
+                    let mut key_id_buf = vec![0u8; key_id_len];
+                    f.read_exact(&mut key_id_buf)
+                        .expect("Failed to read key ID");
+                    let key_id = String::from_utf8_lossy(&key_id_buf).to_string();
 
-            let mut plaintext_vec = read_file(input_path.to_str().unwrap()).unwrap();
-            plaintext_vec.extend_from_slice(filename_bytes);
+                    let mut filename_len_buf = [0u8; 2];
+                    f.read_exact(&mut filename_len_buf)
+                        .expect("Failed to read filename length");
+                    let filename_len = u16::from_be_bytes(filename_len_buf) as usize;
 
-            let nonce = random::get_nonce();
-            let ciphertext =
-                symmetric_encryption::id_encrypt(aead_id, key_ref, &nonce, &plaintext_vec)
-                    .expect("Encryption failed");
+                    let mut ciphertext = Vec::new();
+                    f.read_to_end(&mut ciphertext)
+                        .expect("Failed to read ciphertext");
 
-            let out_path = match args.output {
-                Some(ref path) => {
-                    let mut p = PathBuf::from(path);
-                    p.set_extension("enc");
-                    p
-                }
-                None => {
-                    let input_path = PathBuf::from(args.input.clone().unwrap());
-                    let mut p = input_path.clone();
-                    p.set_extension("enc");
-                    p
-                }
-            };
-            let mut f = File::create(&out_path).expect("Failed to create output file");
+                    // === Retrieve key from keystore ===
+                    let keypair: key_storage::AsymKeyPair = key_storage::get_key(&key_id)
+                        .unwrap()
+                        .ok_or("Key ID not found in keystore")
+                        .unwrap();
 
-            // === Header: MAGIC | KDF_ID | AEAD_ID | SALT_LEN | SALT | KDF PARAMS ===
-            f.write_all(b"ENC1").expect("Failed to write magic bytes");
-            f.write_all(&[kdf_id]).expect("Failed to write kdf_id");
-            f.write_all(&[aead_id]).expect("Failed to write aead_id");
+                    // === Prompt for password and derive KEK ===
+                    let kek_password = get_password(false).expect("Failed to get password");
+                    let kek = key_derivation::id_derive_key(
+                        keypair.kek_kdf,
+                        &kek_password,
+                        &keypair.kek_salt,
+                        SYM_KEY_LEN,
+                        &keypair.kek_params,
+                    );
 
-            f.write_all(&(salt.len() as u32).to_be_bytes())
-                .expect("Failed to write salt length");
-            f.write_all(&salt).expect("Failed to write salt");
+                    // === Decrypt the stored private key ===
+                    let decrypted_priv_key = symmetric_encryption::id_decrypt(
+                        keypair.kek_aead,
+                        &kek,
+                        &keypair.private_key,
+                    )
+                    .expect("Failed to decrypt private key");
 
-            // === KDF-specific params ===
-            match kdf_id {
-                ARGON2_ID => {
-                    f.write_all(&params["memory_cost"].to_be_bytes())
-                        .expect("Failed to write Argon2 memory cost");
-                    f.write_all(&params["time_cost"].to_be_bytes())
-                        .expect("Failed to write Argon2 time cost");
-                    f.write_all(&params["parallelism"].to_be_bytes())
-                        .expect("Failed to write Argon2 parallelism");
-                }
-                PBKDF2_ID => {
-                    f.write_all(&params["iterations"].to_be_bytes())
-                        .expect("Failed to write PBKDF2 iterations");
-                }
-                _ => panic!("Unknown KDF ID: {}", kdf_id),
-            }
-            // === Filename length ===
-            f.write_all(&filename_len.to_be_bytes())
-                .expect("Failed to write filename length");
-
-            // === Ciphertext (with nonce already included) ===
-            f.write_all(&ciphertext)
-                .expect("Failed to write ciphertext");
-            println!("Encrypted file written to {}", out_path.display());
-        }
-
-        cli::Command::Decrypt(args) => {
-            cli::validate_args(&args);
-            let in_path = PathBuf::from(args.input.clone().unwrap());
-            let mut f = File::open(&in_path).expect("Failed to open encrypted file");
-
-            // === Read header ===
-            let mut magic = [0u8; 4];
-            f.read_exact(&mut magic)
-                .expect("Failed to read magic bytes");
-            if &magic != b"ENC1" {
-                panic!("Invalid file format or magic bytes");
-            }
-
-            let mut kdf_id_buf = [0u8; 1];
-            f.read_exact(&mut kdf_id_buf)
-                .expect("Failed to read kdf_id");
-            let kdf_id = kdf_id_buf[0];
-
-            let mut aead_id_buf = [0u8; 1];
-            f.read_exact(&mut aead_id_buf)
-                .expect("Failed to read aead_id");
-            let aead_id = aead_id_buf[0];
-
-            let mut salt_len_buf = [0u8; 4];
-            f.read_exact(&mut salt_len_buf)
-                .expect("Failed to read salt length");
-            let salt_len = u32::from_be_bytes(salt_len_buf) as usize;
-
-            let mut salt = vec![0u8; salt_len];
-            f.read_exact(&mut salt).expect("Failed to read salt");
-
-            // === Read KDF params ===
-            let mut params = HashMap::new();
-            match kdf_id {
-                ARGON2_ID => {
-                    let mut buf = [0u8; 4];
-                    f.read_exact(&mut buf).expect("Failed to read memory_cost");
-                    params.insert("memory_cost".to_string(), u32::from_be_bytes(buf));
-
-                    f.read_exact(&mut buf).expect("Failed to read time_cost");
-                    params.insert("time_cost".to_string(), u32::from_be_bytes(buf));
-
-                    f.read_exact(&mut buf).expect("Failed to read parallelism");
-                    params.insert("parallelism".to_string(), u32::from_be_bytes(buf));
-                }
-                PBKDF2_ID => {
-                    let mut buf = [0u8; 4];
-                    f.read_exact(&mut buf).expect("Failed to read iterations");
-                    params.insert("iterations".to_string(), u32::from_be_bytes(buf));
-                }
-                _ => panic!("Unknown KDF ID: {}", kdf_id),
-            }
-
-            // === Read original filename length ===
-            let mut filename_len_buf = [0u8; 2];
-            f.read_exact(&mut filename_len_buf)
-                .expect("Failed to read filename length");
-            let filename_len = u16::from_be_bytes(filename_len_buf) as usize;
-
-            // === Read ciphertext ===
-            let mut ciphertext = Vec::new();
-            f.read_to_end(&mut ciphertext)
-                .expect("Failed to read ciphertext");
-
-            // === Derive key ===
-            let password = get_password(false).expect("Failed to get password");
-            let key = key_derivation::id_derive_key(kdf_id, &password, &salt, SYM_KEY_LEN, &params);
-
-            // === Decrypt ===
-            let plaintext_with_filename =
-                symmetric_encryption::id_decrypt(aead_id, &key, &ciphertext)
+                    // === Proceed with asymmetric decryption ===
+                    let plaintext_with_filename = asymmetric_crypto::id_asym_dec(
+                        alg_id,
+                        &decrypted_priv_key,
+                        &ciphertext,
+                        Some(sym_alg_id),
+                    )
                     .expect("Decryption failed");
 
-            // === Extract original filename and file contents ===
-            let total_len = plaintext_with_filename.len();
-            if filename_len > total_len {
-                panic!("Corrupted data: filename length exceeds decrypted content size");
+                    let total_len = plaintext_with_filename.len();
+                    if filename_len > total_len {
+                        panic!("Corrupted data: filename length exceeds decrypted content size");
+                    }
+
+                    let filename_start = total_len - filename_len;
+                    let file_data = &plaintext_with_filename[..filename_start];
+                    let original_filename =
+                        String::from_utf8_lossy(&plaintext_with_filename[filename_start..]);
+
+                    let out_path = match args.output {
+                        Some(ref path) => PathBuf::from(path),
+                        None => PathBuf::from(original_filename.to_string()),
+                    };
+
+                    let mut out_file =
+                        File::create(&out_path).expect("Failed to create output file");
+                    out_file
+                        .write_all(file_data)
+                        .expect("Failed to write decrypted data");
+
+                    println!(
+                        "Decryption complete. Output written to {}",
+                        out_path.display()
+                    );
+                }
+
+                _ => panic!("Unknown encryption format"),
             }
-
-            let filename_start = total_len - filename_len;
-            let file_data = &plaintext_with_filename[..filename_start];
-            let original_filename =
-                String::from_utf8_lossy(&plaintext_with_filename[filename_start..]);
-
-            // === Determine output path ===
-            let out_path = match args.output {
-                Some(ref path) => PathBuf::from(path),
-                None => PathBuf::from(original_filename.to_string()),
-            };
-
-            let mut out_file = File::create(&out_path).expect("Failed to create output file");
-            out_file
-                .write_all(file_data)
-                .expect("Failed to write decrypted data");
-
-            println!(
-                "Decryption complete. Output written to {}",
-                out_path.display()
-            );
         }
 
         cli::Command::Profile(args) => {

@@ -198,3 +198,108 @@ pub fn id_keypair_gen(
         _ => Err(format!("Unrecognized asymmetric key type: {}", alg_id).into()),
     }
 }
+
+pub fn id_asym_enc(
+    alg_id: u8,
+    pub_key: &[u8],
+    data: &[u8],
+    sym_alg_id: Option<u8>,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    match alg_id {
+        ECC_ID => {
+            let sym_alg_id =
+                sym_alg_id.ok_or("Missing symmetric algorithm ID for ECC encryption")?;
+            ecc_enc(pub_key, data, sym_alg_id)
+        }
+        RSA_ID => Ok(rsa_enc(pub_key, data)),
+        _ => Err(format!("Unrecognized asymmetric key type: {}", alg_id).into()),
+    }
+}
+
+pub fn id_asym_dec(
+    alg_id: u8,
+    priv_key: &[u8],
+    ciphertext: &[u8],
+    sym_alg_id: Option<u8>,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    match alg_id {
+        ECC_ID => {
+            let sym_alg_id =
+                sym_alg_id.ok_or("Missing symmetric algorithm ID for ECC decryption")?;
+            ecc_dec(priv_key, ciphertext, sym_alg_id)
+        }
+        RSA_ID => Ok(rsa_dec(priv_key, ciphertext)),
+        _ => Err(format!("Unrecognized asymmetric key type: {}", alg_id).into()),
+    }
+}
+
+// Testing
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn test_rsa_enc_dec_kat() {
+        let plaintext = b"Test vector: RSA encryption works!";
+        let key_bits = 2048;
+
+        // Generate RSA keypair using your provided method
+        let (priv_key, pub_key) = rsa_key_gen(key_bits);
+
+        // Encrypt using public key
+        let ciphertext = rsa_enc(&pub_key, plaintext);
+
+        // Decrypt using private key
+        let decrypted = rsa_dec(&priv_key, &ciphertext);
+
+        // Verify the output matches input
+        assert_eq!(
+            decrypted, plaintext,
+            "Decrypted data does not match original"
+        );
+    }
+    #[test]
+    fn test_rsa_sign_verify_kat() {
+        let message = b"Test vector: RSA signing works!";
+        let (priv_key_der, pub_key_der) = rsa_key_gen(2048); // Should return (Vec<u8>, Vec<u8>)
+
+        // Sign
+        let signature = rsa_sign(&priv_key_der, message);
+
+        // Verify
+        let result = rsa_verify(&pub_key_der, message, &signature);
+        assert!(result.is_ok(), "RSA signature verification failed");
+    }
+
+    #[test]
+    fn test_ecc_enc_dec_kat() {
+        let sym_alg_id = 1; // Replace with your actual symmetric algorithm ID (e.g. AES-GCM = 1)
+        let plaintext = b"Test vector: ECC encryption works!";
+
+        // Generate keypair using your provided method
+        let (priv_key, pub_key) = ecc_key_gen();
+
+        // Encrypt using public key
+        let ciphertext = ecc_enc(&pub_key, plaintext, sym_alg_id).expect("ECC encryption failed");
+
+        // Decrypt using private key
+        let decrypted = ecc_dec(&priv_key, &ciphertext, sym_alg_id).expect("ECC decryption failed");
+
+        // Verify the output matches input
+        assert_eq!(
+            decrypted, plaintext,
+            "Decrypted data does not match original"
+        );
+    }
+    #[test]
+    fn test_ecdsa_sign_verify_kat() {
+        let message = b"Test vector: ECDSA signing works!";
+        let (priv_key_der, pub_key_sec1) = ecc_key_gen(); // Should return (Vec<u8>, Vec<u8>)
+
+        // Sign
+        let signature = ecdsa_sign(&priv_key_der, message).expect("ECDSA signing failed");
+
+        // Verify
+        let result = ecdsa_verify(&pub_key_sec1, message, &signature);
+        assert!(result.is_ok(), "ECDSA signature verification failed");
+    }
+}

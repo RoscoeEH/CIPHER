@@ -94,25 +94,28 @@ pub struct EncryptArgs {
     pub input: Option<String>,
     pub output: Option<String>,
 
-    #[arg(short = 'k', long = "kdf")]
+    #[arg(short = 'a', long = "aym", default_value_t = false)]
+    pub asym: bool,
+
+    #[arg(long = "kdf")]
     pub kdf: Option<String>,
 
-    #[arg(short = 'm', long = "mem-cost")]
+    #[arg(long = "mem-cost")]
     pub memory_cost: Option<u32>,
 
-    #[arg(short = 't', long = "time-cost")]
+    #[arg(long = "time-cost")]
     pub time_cost: Option<u32>,
 
-    #[arg(short = 'p', long = "parallelism")]
+    #[arg(long = "parallelism")]
     pub parallelism: Option<u32>,
 
-    #[arg(short = 'i', long = "iters")]
+    #[arg(long = "iters")]
     pub iterations: Option<u32>,
 
-    #[arg(short = 'a', long = "aead")]
+    #[arg(long = "aead")]
     pub aead: Option<String>,
 
-    #[arg(long = "key")]
+    #[arg(short = 'k', long = "key")]
     pub input_key: Option<String>,
 
     // if you want the output copied to clipboard
@@ -135,6 +138,9 @@ impl Validatable for EncryptArgs {
                     return Err("No input file found.".into());
                 }
             }
+        }
+        if self.asym && !self.input_key.is_some() {
+            return Err("Must provide key for asymmetric encryption.".into());
         }
         if self.input_key.is_some() && self.kdf.is_some() {
             return Err("Cannot provide both an input key and a KDF — choose one.".into());

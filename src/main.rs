@@ -1,3 +1,16 @@
+// main.rs
+//
+// Copyright (c) 2025 RoscoeEH
+//
+// This source code is licensed under the MIT License.
+// See the LICENSE file in the project root for full license information.
+//
+// Author: RoscoeEH
+//
+// Description:
+// Entry point of the application. Orchestrates high-level logic and integrates
+// components including CLI processing, encryption routines, key management, and profile handling.
+
 use rpassword::read_password;
 use secrecy::{ExposeSecret, Secret};
 use sha2::{Digest, Sha256};

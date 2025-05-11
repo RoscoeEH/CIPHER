@@ -1,6 +1,15 @@
-// The algorithm IDS will go here
-
-// Algorithm IDs //
+// constants.rs
+//
+// Copyright (c) 2025 RoscoeEH
+//
+// This source code is licensed under the MIT License.
+// See the LICENSE file in the project root for full license information.
+//
+// Author: RoscoeEH
+//
+// Description:
+// Contains constant values used throughout the application, such as
+// algorithm identifiers, key lengths, and configuration defaults.
 
 // AEAD
 pub const AES_GCM_ID: u8 = 0;

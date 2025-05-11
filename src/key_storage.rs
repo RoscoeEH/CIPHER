@@ -1,3 +1,16 @@
+// key_storage.rs
+//
+// Copyright (c) 2025 RoscoeEH
+//
+// This source code is licensed under the MIT License.
+// See the LICENSE file in the project root for full license information.
+//
+// Author: RoscoeEH
+//
+// Description:
+// Provides logic for serializing, storing, retrieving, and managing
+// symmetric and asymmetric keys in a RocksDB-backed keystore.
+
 use crate::utils::*;
 use bincode;
 use directories::ProjectDirs;

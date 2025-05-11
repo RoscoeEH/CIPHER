@@ -1,3 +1,16 @@
+// cli.rs
+//
+// Copyright (c) 2025 RoscoeEH
+//
+// This source code is licensed under the MIT License.
+// See the LICENSE file in the project root for full license information.
+//
+// Author: RoscoeEH
+//
+// Description:
+// Defines and handles the command-line interface, including parsing commands,
+// validating arguments, and routing user input to the appropriate functions.
+
 use crate::constants::*;
 use crate::user::*;
 use clap::{Args, Parser, Subcommand};

@@ -1,3 +1,16 @@
+// key_derivation.rs
+//
+// Copyright (c) 2025 RoscoeEH
+//
+// This source code is licensed under the MIT License.
+// See the LICENSE file in the project root for full license information.
+//
+// Author: RoscoeEH
+//
+// Description:
+// Implements key derivation functions (KDFs) including support for
+// algorithms like Argon2 and PBKDF2.
+
 use argon2::{Algorithm, Argon2, Params, Version};
 use pbkdf2::pbkdf2_hmac;
 use secrecy::{ExposeSecret, Secret};

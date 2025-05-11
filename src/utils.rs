@@ -1,3 +1,16 @@
+// utils.rs
+//
+// Copyright (c) 2025 RoscoeEH
+//
+// This source code is licensed under the MIT License.
+// See the LICENSE file in the project root for full license information.
+//
+// Author: RoscoeEH
+//
+// Description:
+// General-purpose utility functions used throughout the application, such as
+// time handling, parsing helpers, etc...
+
 use crate::constants::*;
 use chrono::{DateTime, Utc};
 use std::error::Error;

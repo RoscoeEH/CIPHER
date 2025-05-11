@@ -1,3 +1,16 @@
+// user.rs
+//
+// Copyright (c) 2025 RoscoeEH
+//
+// This source code is licensed under the MIT License.
+// See the LICENSE file in the project root for full license information.
+//
+// Author: RoscoeEH
+//
+// Description:
+// Manages user profiles, including serialization and RocksDB storage.
+// User profiles contain preferred encryption parameters (KDF, AEAD, and their configuration).
+
 use crate::constants::*;
 use crate::utils::alg_id_to_name;
 use bincode;

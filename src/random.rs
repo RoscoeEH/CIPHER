@@ -1,3 +1,16 @@
+// random.rs
+//
+// Copyright (c) 2025 RoscoeEH
+//
+// This source code is licensed under the MIT License.
+// See the LICENSE file in the project root for full license information.
+//
+// Author: RoscoeEH
+//
+// Description:
+// Utilities for generating cryptographically secure random values,
+// including salts, nonces, and arbitrary-length byte sequences.
+
 use rand::rngs::OsRng;
 use rand::RngCore;
 

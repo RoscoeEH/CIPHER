@@ -1,3 +1,16 @@
+// symmetric_encryption.rs
+//
+// Copyright (c) 2025 RoscoeEH
+//
+// This source code is licensed under the MIT License.
+// See the LICENSE file in the project root for full license information.
+//
+// Author: RoscoeEH
+//
+// Description:
+// Symmetric encryption utilities using AEAD algorithms.
+// Includes encryption/decryption logic and known-answer tests (KATs) for validation.
+
 use aead::{generic_array::GenericArray, Aead, AeadCore, Error as AeadError, KeyInit, KeySizeUser};
 use aes_gcm::Aes256Gcm;
 use chacha20poly1305::ChaCha20Poly1305;

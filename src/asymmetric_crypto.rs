@@ -1,3 +1,16 @@
+// asymmetric_crypto.rs
+//
+// Copyright (c) 2025 RoscoeEH
+//
+// This source code is licensed under the MIT License.
+// See the LICENSE file in the project root for full license information.
+//
+// Author: RoscoeEH
+//
+// Description:
+// Handles all asymmetric cryptographic operations, including key generation,
+// encryption, decryption, signing, verification, and testing for asymmetric algorithms.
+
 use elliptic_curve::{
     pkcs8::{DecodePrivateKey, EncodePrivateKey},
     sec1::{EncodedPoint, FromEncodedPoint, ToEncodedPoint},

@@ -1,114 +1,238 @@
 # CIPHER: Command-line Interface for Protection, Hardening, and Endpoint Reinforcement
 
-A command-line tool to encrypt and decrypt files using AES-256-GCM and Argon2 password-based key derivation. Encrypted files are stored in a single `.enc` file containing all necessary decryption parameters and the ciphertext.
+**Cipher** is a flexible, extensible command-line application for encrypting and decrypting files using modern cryptographic standards. It supports both symmetric and asymmetric encryption schemes, configurable password-based key derivation functions (KDFs), and profile-based parameter management.
 
-In the past I had used GPG to password encrypt files but I was looking over its protocols and noticed that it uses a somewhat dated KDF and does not include authenticated encryption. This tool fills those gaps.
+Cipher securely encapsulates all necessary cryptographic material—including ciphertext, salt, nonces, and algorithm identifiers—into a single `.enc` or `.sig` file for reliable and portable decryption and verification. Key generation, storage, and verification are handled via RocksDB and Serde, with user-defined profiles simplifying cryptographic parameter reuse.
 
-## Features
+## ✨ Features
 
-- **AES-256-GCM** for authenticated encryption
-- **Argon2** for secure password-based key derivation
-- Secure random salt and nonce generation
-- Memory zeroization of sensitive data
-- Password verification during encryption
-- Original filename embedded in the encrypted file
-- All encrypted data stored in a single `.enc` file
+- 🔐 **Authenticated Encryption** using **AES-256-GCM** and **ChaCha20-Poly1305**
+- 🧪 **Known Answer Tests (KATs)** for symmetric encryption schemes
+- 🔑 **Password-based Key Derivation** with **Argon2** and **PBKDF2**
+- 📦 **User Profiles** for storing cryptographic preferences (KDF parameters, AEAD choice)
+- 🔁 **Asymmetric Encryption Support** for **RSA** and **ECC**, including:
+  - Key generation
+  - Encryption/decryption
+  - Signing and verification
+- 📝 **Signed files** are saved with a `.sig` extension
+- 💾 **Serde-powered serialization** for user profiles and key storage
+- 🔐 **Secure Key Storage** using RocksDB with optional encryption of private keys
+- 🧂 Secure random **salt** and **nonce** generation
+- 🧽 Automatic **zeroization** of sensitive memory (e.g., keys, passwords)
+- 🔁 **Password verification** on entry to reduce human error
+- 🗂️ Encrypted output stored in a **single `.enc` file** containing:
+  - Encrypted payload
+  - Algorithm identifiers
+  - Salt, nonce, and metadata
 
-## Dependencies
+## 📦 Dependencies
 
-- [aes-gcm](https://crates.io/crates/aes-gcm)
-- [argon2](https://crates.io/crates/argon2)
-- [rand](https://crates.io/crates/rand)
-- [zeroize](https://crates.io/crates/zeroize)
-- [rpassword](https://crates.io/crates/rpassword)
-- [clap](https://crates.io/crates/clap)
+This project makes use of the following Rust crates:
 
-## Usage
+- [aes-gcm](https://crates.io/crates/aes-gcm) — Authenticated encryption (AES-256-GCM)
+- [chacha20poly1305](https://crates.io/crates/chacha20poly1305) — Alternative AEAD cipher
+- [argon2](https://crates.io/crates/argon2) — Memory-hard password hashing and key derivation
+- [pbkdf2](https://crates.io/crates/pbkdf2) — Password-based key derivation function
+- [hmac](https://crates.io/crates/hmac) — HMAC construction for PBKDF2
+- [sha2](https://crates.io/crates/sha2) — SHA-2 hash functions
+- [aead](https://crates.io/crates/aead) — AEAD trait abstraction
+- [generic-array](https://crates.io/crates/generic-array) — Fixed-size arrays used in cryptographic types
+- [typenum](https://crates.io/crates/typenum) — Type-level numbers used with generic-array
+- [rsa](https://crates.io/crates/rsa) — RSA encryption, signing, and keypair generation
+- [p256](https://crates.io/crates/p256) — NIST P-256 curve for ECC key exchange and signing
+- [elliptic-curve](https://crates.io/crates/elliptic-curve) — ECC trait definitions and encoding support
+- [secrecy](https://crates.io/crates/secrecy) — Secret type wrappers for zeroization and memory safety
+- [zeroize](https://crates.io/crates/zeroize) — Secure memory zeroing for sensitive data
+- [serde](https://crates.io/crates/serde) — Serialization framework with `derive` support
+- [bincode](https://crates.io/crates/bincode) — Binary serialization using Serde
+- [rocksdb](https://crates.io/crates/rocksdb) — Persistent key-value database for profile and key storage
+- [lazy_static](https://crates.io/crates/lazy_static) — Runtime-initialized global variables
+- [rpassword](https://crates.io/crates/rpassword) — Secure password input from the terminal
+- [clap](https://crates.io/crates/clap) — Command-line argument parsing with derive support
+- [rand](https://crates.io/crates/rand) — Random number generation
+- [rand_core](https://crates.io/crates/rand_core) — Core traits for RNGs
+- [directories](https://crates.io/crates/directories) — Cross-platform standard directories (config, data, cache)
+- [chrono](https://crates.io/crates/chrono) — Date and time utilities
 
-### Encrypt a file
+## 🚀 Usage
 
-```sh
-cargo run --release -- encrypt path/to/file.txt
-```
-or
-```sh
-cargo run --release -- e path/to/file.txt
-```
+The `cipher` CLI tool provides a variety of commands to handle encryption, decryption, key management, and user profile customization.
 
-- You will be prompted to enter and confirm a password.
-- The tool will create a file named after your input, but with a `.enc` extension (e.g., `file.txt.enc`).
-- The `.enc` file contains all information needed for decryption: salt, nonce, original filename, and ciphertext.
+### General Functions
 
-You can optionally specify an output path (without `.enc`) using the third argument:
+#### 🔐 File Encryption & Decryption
 
-```sh
-cargo run --release -- e path/to/file.txt path/to/output/file
-```
-This will produce `path/to/output/file.enc`.
+- `encrypt`: Encrypt a file using symmetric (default) or asymmetric encryption. Supports profile-based parameter configuration, custom AEAD and KDF choices, and secure key handling.
+- `decrypt`: Decrypt an encrypted `.enc` file back to its original format.
 
-### Decrypt a file
+#### 🔑 Key Management
 
-```sh
-cargo run --release -- decrypt path/to/file.txt.enc
-```
-or
-```sh
-cargo run --release -- d path/to/file.txt.enc
-```
+- `keygen`: Generate a new symmetric or asymmetric key pair (RSA or ECC). Can be associated with a profile for customized encryption settings.
+- `list-keys`: Display all stored keys in the database.
+- `delete-key`: Permanently delete a key by its ID.
 
-- You will be prompted for the password used during encryption.
-- The tool will write the decrypted file in the same directory, using the original filename embedded in the `.enc` file.
+#### 🧾 Profiles
+
+- `profile`: Update a user profile’s encryption parameters (e.g., `kdf_id`, `aead_alg_id`, `memory_cost`, etc.).
+- `list-profiles`: Show all stored user profiles.
+
+#### ✍️ Signing & Verification
+
+- `sign`: Digitally sign a file using a private key. The signature is saved as a `.sig` file.
+- `verify`: Verify a signed file and optionally extract the original content.
+
+
+### Inputs
+
+#### 🔐 `encrypt`
+
+| Argument         | Type      | Description                                                                 |
+|------------------|-----------|-----------------------------------------------------------------------------|
+| `input`          | `String`  | Path to the file to encrypt *(required)*                                    |
+| `output`         | `String`  | Path to write the encrypted `.enc` file *(optional)*                        |
+| `--asym`, `-a`   | `bool`    | Use asymmetric encryption *(requires `--key`)*                              |
+| `--kdf`          | `String`  | Override KDF algorithm (e.g., `argon2`, `pbkdf2`) *(optional)*              |
+| `--mem-cost`     | `u32`     | Argon2 memory cost *(optional)*                                             |
+| `--time-cost`    | `u32`     | Argon2 time cost *(optional)*                                               |
+| `--parallelism`  | `u32`     | Argon2 parallelism *(optional)*                                             |
+| `--iters`        | `u32`     | PBKDF2 iterations *(optional)*                                              |
+| `--aead`         | `String`  | AEAD algorithm (e.g., `aes256gcm`, `chacha20poly1305`) *(optional)*         |
+| `--key`, `-k`    | `String`  | Use existing key ID *(required for asymmetric encryption)*                  |
+
+#### 🔓 `decrypt`
+
+| Argument         | Type      | Description                                        |
+|------------------|-----------|----------------------------------------------------|
+| `input`          | `String`  | Path to the encrypted `.enc` file *(required)*     |
+| `output`         | `String`  | Path to write the decrypted file *(optional)*      |
+
+#### 🧬 `profile`
+
+| Argument         | Type      | Description                                                                            |
+|------------------|-----------|----------------------------------------------------------------------------------------|
+| `--profile`, `-p`| `String`  | Profile ID to update *(defaults to `Default`)*                                        |
+| `update_field`   | `String`  | Field to update (`memory_cost`, `time_cost`, etc.) *(required)*                       |
+| `value`          | `String`  | New value for the specified field *(required)*                                        |
+
+#### 📋 `list-profiles`
+Does not require any inputs.
+
+#### 🔑 `key-gen`
+
+| Argument              | Type      | Description                                                                |
+|-----------------------|-----------|----------------------------------------------------------------------------|
+| `id`                  | `String`  | Unique identifier for the key *(required)*                                 |
+| `--symmetric`, `-s`   | `bool`    | Generate a symmetric key                                                   |
+| `--asymmetric-alg`, `-a` | `String`  | Generate an asymmetric key pair (`rsa`, `ecc`) *(mutually exclusive with symmetric)* |
+| `--bits`, `-b`        | `usize`   | RSA key size in bits (`2048`, `3072`, `4096`) *(RSA only)*                 |
+| `--profile`, `-p`     | `String`  | Associated profile ID *(defaults to `Default`)*                            |
+
+#### 🗝️ `list-keys`
+Does not require any inputs.
+
+#### ❌ `delete-key`
+
+| Argument | Type     | Description                  |
+|----------|----------|------------------------------|
+| `id`     | `String` | ID of the key to delete      |
+
+#### 💣 `wipe`
+
+| Argument         | Type   | Description                            |
+|------------------|--------|----------------------------------------|
+| `--keys`, `-k`   | `bool` | Wipe all keys                          |
+| `--profiles`, `-p` | `bool` | Wipe all profiles                      |
+
+#### ✍️ `sign`
+
+| Argument         | Type      | Description                        |
+|------------------|-----------|------------------------------------|
+| `input`          | `String`  | File to sign *(required)*          |
+| `--key`, `-k`    | `String`  | ID of the private key to sign with |
+
+
+#### ✅ `verify`
+
+| Argument             | Type     | Description                                        |
+|----------------------|----------|----------------------------------------------------|
+| `input`              | `String` | Path to `.sig` file to verify *(required)*         |
+| `--only-verify`, `-o`| `bool`   | Only verify, do not output original file (optional)|
+
 
 ## File Format
 
-The `.enc` file is a custom binary format with the following structure:
+### `.enc` — Encrypted File Format
 
-| Field            | Size         | Description                                 |
-|------------------|--------------|---------------------------------------------|
-| Magic bytes      | 4 bytes      | `b"ENC1"` (format identifier)               |
-| Salt             | 16 bytes     | Random salt for Argon2 key derivation       |
-| Nonce            | 12 bytes     | Random nonce for AES-GCM                    |
-| Filename length  | 2 bytes      | Big-endian unsigned integer (u16)           |
-| Filename         | variable     | UTF-8 encoded original filename             |
-| Ciphertext       | variable     | Encrypted file data (AES-GCM)               |
+The `.enc` file has two distinct variants, depending on whether **symmetric** or **asymmetric** encryption is used.
 
-All fields are concatenated in the above order.
+#### Symmetric Encryption (`ENC1`)
+
+| Field             | Size         | Description                                         |
+|------------------|--------------|-----------------------------------------------------|
+| Magic bytes      | 4 bytes      | `b"ENC1"` (format identifier)                       |
+| KDF ID           | 1 byte       | ID for the key derivation function (e.g. Argon2)    |
+| AEAD ID          | 1 byte       | AEAD algorithm ID (e.g. AES-GCM)                    |
+| Salt length      | 4 bytes      | Big-endian `u32`, number of salt bytes              |
+| Salt             | variable     | Random salt for KDF                                 |
+| KDF Params       | variable     | Depends on KDF:<br/>- Argon2: `memory_cost (4)`, `time_cost (4)`, `parallelism (4)`<br/>- PBKDF2: `iterations (4)` |
+| Filename length  | 2 bytes      | Big-endian `u16`                                    |
+| Ciphertext       | variable     | AEAD-encrypted content + filename (as payload)      |
+
+All fields are concatenated in the above order. The header is also used as AEAD associated data (AAD).
+
+#### Asymmetric Encryption (`ENC2`)
+
+| Field             | Size         | Description                                             |
+|------------------|--------------|---------------------------------------------------------|
+| Magic bytes      | 4 bytes      | `b"ENC2"`                                               |
+| Asym Alg ID      | 1 byte       | Asymmetric encryption algorithm (e.g. RSA, X25519)     |
+| AEAD ID          | 1 byte       | AEAD used for symmetric key wrapping (e.g. AES-GCM)    |
+| Key ID length    | 2 bytes      | Big-endian `u16`                                       |
+| Key ID           | variable     | UTF-8 key ID used for encryption                       |
+| Filename length  | 2 bytes      | Big-endian `u16`                                       |
+| Ciphertext       | variable     | Encrypted content + filename (as payload)              |
+
+Unlike symmetric encryption, the ciphertext includes a key ID so the associated private key can be used.
+
+---
+
+### `.sig` — Signed File Format
+
+| Field              | Size         | Description                                          |
+|-------------------|--------------|------------------------------------------------------|
+| Magic bytes       | 4 bytes      | `b"SIG1"` (format identifier for signatures)         |
+| Asym Alg ID       | 1 byte       | Signing algorithm (e.g. RSA, Ed25519)                |
+| Key ID length     | 1 byte       | Length of key ID in bytes                            |
+| Key ID            | variable     | UTF-8 key ID used for signing                        |
+| Filename length   | 2 bytes      | Big-endian `u16`, original filename                  |
+| Filename          | variable     | UTF-8 bytes of original filename                     |
+| Data length       | 8 bytes      | Big-endian `u64`, original input file size           |
+| Data              | variable     | File contents                                        |
+| Signature         | variable     | Signature over header + data                         |
+
+The signature is generated over the **header and file content**, hashed and signed using the appropriate algorithm.
+
 
 ## Security Notes
 
-- Uses **Argon2** for password-based key derivation (16-byte salt, 32-byte key).
-- Uses **AES-256-GCM** for encryption (12-byte nonce).
-- Passwords and keys are zeroized from memory after use.
-- The salt, nonce, and original filename are stored unencrypted in the `.enc` file.
+- Uses **Argon2id** or **PBKDF2** for password-based key derivation (configurable parameters, 16-byte salt, 32-byte derived key).
+- Symmetric encryption uses **AES-256-GCM** or **ChaCha20Poly1305** with a 12-byte nonce and AEAD for integrity and confidentiality.
+- Asymmetric encryption wraps a symmetric key using a public key (e.g., **X25519**, **RSA**) and includes only the **key ID**, not the public key itself, in the `.enc` file.
+- Digital signatures use asymmetric keys (e.g., **Ed25519**, **RSA-PSS**) and sign both file metadata and contents.
+- Passwords and decrypted key material are **zeroized from memory** after use.
 
-## Other Notes
+### File Storage Details
 
-1. **To create an independently useful executable**, run the following command:
+- `.enc` files:
+  - **Symmetric mode** stores: salt, KDF parameters, AEAD algorithm ID, and original filename (encrypted), and ciphertext (encrypted).
+  - **Asymmetric mode** stores: asymmetric key type, symmetric AEAD ID, key ID, filename (encrypted) and ciphertext (encrypted).
+- `.sig` files:
+  - Include: magic bytes (`SIG1`), signing algorithm ID, key ID, original filename, original file length, original data, and the signature.
+  - The private signing key is **never stored**, only the **key ID** is embedded in the file.
+  - The signature covers both metadata and the full file content to prevent tampering.
 
+## Build Notes
+Build production executable with:
 ```sh
 cargo build --release
-```
-
-This will generate the optimized executable in the `target/release` directory. Store a copy of the resulting executable at a location of your choice.
-
-2. **Using Bash Scripts for Encryption and Decryption**
-
-After building the executable, you can use the following Bash functions to encrypt and decrypt files:
-
-**Encrypting a File**:
-```bash
-encrypt-file() {
-  local fullpath
-  fullpath="$(realpath "$1")" || return 1
-  /path/to/executable encrypt "$fullpath"
-}
-```
-
-**Decrypting a File**:
-```bash
-decrypt-file() {
-  local fullpath
-  fullpath="$(realpath "$1")" || return 1
-  /path/to/executable decrypt "$fullpath"
-}
 ```

@@ -708,5 +708,135 @@ fn main() {
                 println!("Key does not exist.")
             }
         }
+
+        cli::Command::Sign(args) => {
+            cli::validate_args(&args);
+
+            let input_path = PathBuf::from(&args.input);
+            let filename = input_path.file_name().unwrap().to_str().unwrap();
+            let data = read_file(input_path.to_str().unwrap()).unwrap();
+
+            // … load & decrypt private key exactly as before …
+            let keypair: key_storage::AsymKeyPair = key_storage::get_key(&args.key_id)
+                .unwrap()
+                .ok_or("Key ID not found in keystore")
+                .unwrap();
+            let kek_password = get_password(false).unwrap();
+            let kek = key_derivation::id_derive_key(
+                keypair.kek_kdf,
+                &kek_password,
+                &keypair.kek_salt,
+                SYM_KEY_LEN,
+                &keypair.kek_params,
+            );
+            let decrypted_priv = symmetric_encryption::id_decrypt(
+                keypair.kek_aead,
+                &kek,
+                &keypair.private_key,
+                None,
+            )
+            .unwrap();
+
+            let alg_id = keypair.key_type;
+            let key_id_bytes = args.key_id.as_bytes();
+            let filename_bytes = filename.as_bytes();
+
+            // === Build header ===
+            let mut header = Vec::new();
+            header.extend_from_slice(b"SIG1");
+            header.push(alg_id);
+            header.push(key_id_bytes.len() as u8);
+            header.extend_from_slice(key_id_bytes);
+            header.extend_from_slice(&(filename_bytes.len() as u16).to_be_bytes());
+            header.extend_from_slice(filename_bytes);
+            header.extend_from_slice(&(data.len() as u64).to_be_bytes()); // DATA_LEN
+
+            // === Sign header+data ===
+            let mut signed_blob = header.clone();
+            signed_blob.extend_from_slice(&data);
+            let data_hash = hash(&signed_blob);
+            let signature = asymmetric_crypto::id_sign(alg_id, &decrypted_priv, &data_hash)
+                .expect("Signing failed");
+
+            // === Write out: header, data, then signature ===
+            let sig_path = input_path.with_extension("sig");
+            let mut f = File::create(&sig_path).expect("Failed to create output file");
+            f.write_all(&header).unwrap();
+            f.write_all(&data).unwrap();
+            f.write_all(&signature).unwrap();
+
+            println!("Signed file written to '{}'", sig_path.display());
+        }
+        cli::Command::Verify(args) => {
+            cli::validate_args(&args);
+
+            let sig_path = PathBuf::from(&args.input);
+            let raw = read_file(sig_path.to_str().unwrap()).unwrap();
+            let mut cursor = std::io::Cursor::new(&raw);
+
+            // === Parse header ===
+            let mut magic = [0u8; 4];
+            cursor.read_exact(&mut magic).unwrap();
+            if &magic != b"SIG1" {
+                panic!("Bad magic");
+            }
+
+            let mut buf1 = [0u8; 1];
+            cursor.read_exact(&mut buf1).unwrap();
+            let alg_id = buf1[0];
+
+            cursor.read_exact(&mut buf1).unwrap();
+            let key_id_len = buf1[0] as usize;
+            let mut key_id_bytes = vec![0u8; key_id_len];
+            cursor.read_exact(&mut key_id_bytes).unwrap();
+            let key_id = String::from_utf8_lossy(&key_id_bytes);
+
+            let mut buf2 = [0u8; 2];
+            cursor.read_exact(&mut buf2).unwrap();
+            let filename_len = u16::from_be_bytes(buf2) as usize;
+            let mut filename_bytes = vec![0u8; filename_len];
+            cursor.read_exact(&mut filename_bytes).unwrap();
+            let original_filename = String::from_utf8_lossy(&filename_bytes);
+
+            let mut buf8 = [0u8; 8];
+            cursor.read_exact(&mut buf8).unwrap();
+            let data_len = u64::from_be_bytes(buf8) as usize;
+
+            let header_len = 4 + 1 + 1 + key_id_len + 2 + filename_len + 8;
+
+            // === Extract data & signature ===
+            let data_start = header_len;
+            let data_end = data_start + data_len;
+            if raw.len() < data_end {
+                panic!("File too short for declared data length");
+            }
+            let data = &raw[data_start..data_end];
+            let signature = &raw[data_end..];
+
+            // === Reconstruct signed blob ===
+            let signed_blob = &raw[..data_end];
+            let data_hash = hash(&signed_blob);
+
+            // === Load public key ===
+            let keypair: key_storage::AsymKeyPair = key_storage::get_key(&key_id)
+                .unwrap()
+                .ok_or("Key ID not found")
+                .unwrap();
+            let pub_key = keypair.public_key;
+
+            // === Verify ===
+            asymmetric_crypto::id_verify(alg_id, &pub_key, &data_hash, signature)
+                .expect("Signature verification failed");
+
+            println!("Signature verified.");
+
+            // optionally write unsigned file:
+            if !args.only_verify {
+                let out = sig_path.with_file_name(original_filename.to_string());
+                let mut f = File::create(&out).unwrap();
+                f.write_all(data).unwrap();
+                println!("Unsigned data written to '{}'", out.display());
+            }
+        }
     }
 }

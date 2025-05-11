@@ -87,6 +87,10 @@ pub enum Command {
     /// Delete a singluar key
     #[clap(name = "delete-key")]
     DeleteKey(DeleteKeyArgs),
+
+    Sign(SignArgs),
+
+    Verify(VerifyArgs),
 }
 
 #[derive(Args, Clone)]
@@ -357,4 +361,32 @@ impl Validatable for KeyGenArgs {
 #[derive(Args)]
 pub struct DeleteKeyArgs {
     pub id: String,
+}
+
+#[derive(Args)]
+pub struct SignArgs {
+    pub input: String,
+    #[arg(short = 'k', long = "key")]
+    pub key_id: String,
+}
+impl Validatable for SignArgs {
+    fn validate(&self) -> Result<(), Box<dyn Error>> {
+        validate_path(self.input.as_str())?;
+        Ok(())
+    }
+}
+
+#[derive(Args)]
+pub struct VerifyArgs {
+    pub input: String,
+    #[arg(short = 'k', long = "key")]
+    pub key_id: String,
+    #[arg(short = 'o', long = "only-verify", default_value_t = false)]
+    pub only_verify: bool,
+}
+impl Validatable for VerifyArgs {
+    fn validate(&self) -> Result<(), Box<dyn Error>> {
+        validate_path(self.input.as_str())?;
+        Ok(())
+    }
 }

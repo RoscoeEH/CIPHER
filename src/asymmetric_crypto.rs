@@ -30,7 +30,7 @@ use crate::random::*;
 use crate::symmetric_encryption::*;
 
 // RSA
-pub fn rsa_key_gen(bits: usize) -> (Vec<u8>, Vec<u8>) {
+fn rsa_key_gen(bits: usize) -> (Vec<u8>, Vec<u8>) {
     let mut rng = thread_rng();
     let private_key = RsaPrivateKey::new(&mut rng, bits).expect("RSA key gen failed");
     let public_key = RsaPublicKey::from(&private_key);
@@ -48,7 +48,7 @@ pub fn rsa_key_gen(bits: usize) -> (Vec<u8>, Vec<u8>) {
     )
 }
 
-pub fn rsa_enc(pub_key: &[u8], data: &[u8]) -> Vec<u8> {
+fn rsa_enc(pub_key: &[u8], data: &[u8]) -> Vec<u8> {
     let public_key = RsaPublicKey::from_pkcs1_der(pub_key).expect("Failed to parse DER public key");
 
     public_key
@@ -56,7 +56,7 @@ pub fn rsa_enc(pub_key: &[u8], data: &[u8]) -> Vec<u8> {
         .expect("RSA encryption failed")
 }
 
-pub fn rsa_dec(priv_key: &[u8], ciphertext: &[u8]) -> Vec<u8> {
+fn rsa_dec(priv_key: &[u8], ciphertext: &[u8]) -> Vec<u8> {
     let private_key =
         RsaPrivateKey::from_pkcs1_der(priv_key).expect("Failed to parse DER private key");
 
@@ -65,7 +65,7 @@ pub fn rsa_dec(priv_key: &[u8], ciphertext: &[u8]) -> Vec<u8> {
         .expect("RSA decryption failed")
 }
 
-pub fn rsa_sign(priv_key: &[u8], data: &[u8]) -> Vec<u8> {
+fn rsa_sign(priv_key: &[u8], data: &[u8]) -> Vec<u8> {
     let private_key =
         RsaPrivateKey::from_pkcs1_der(priv_key).expect("Failed to parse DER private key");
 
@@ -78,11 +78,7 @@ pub fn rsa_sign(priv_key: &[u8], data: &[u8]) -> Vec<u8> {
     signature.to_vec()
 }
 
-pub fn rsa_verify(
-    pub_key: &[u8],
-    data: &[u8],
-    signature: &[u8],
-) -> Result<(), rsa::signature::Error> {
+fn rsa_verify(pub_key: &[u8], data: &[u8], signature: &[u8]) -> Result<(), rsa::signature::Error> {
     let public_key = RsaPublicKey::from_pkcs1_der(pub_key).expect("Failed to parse DER public key");
     let verifying_key = RsaVerifyingKey::<Sha256>::new(public_key.clone());
     let sig = RsaSignature::try_from(signature)?;
@@ -93,7 +89,7 @@ pub fn rsa_verify(
 
 // ECC
 
-pub fn ecc_key_gen() -> (Vec<u8>, Vec<u8>) {
+fn ecc_key_gen() -> (Vec<u8>, Vec<u8>) {
     // Generate a secret key
     let secret = P256SecretKey::random(&mut OsRng);
 
@@ -107,7 +103,7 @@ pub fn ecc_key_gen() -> (Vec<u8>, Vec<u8>) {
     (private_der, public_bytes)
 }
 
-pub fn ecc_enc(pub_key: &[u8], data: &[u8], sym_alg_id: u8) -> Result<Vec<u8>, Box<dyn Error>> {
+fn ecc_enc(pub_key: &[u8], data: &[u8], sym_alg_id: u8) -> Result<Vec<u8>, Box<dyn Error>> {
     let encoded_point =
         EncodedPoint::<p256::NistP256>::from_bytes(pub_key).expect("Invalid SEC1 public key bytes");
 
@@ -132,7 +128,7 @@ pub fn ecc_enc(pub_key: &[u8], data: &[u8], sym_alg_id: u8) -> Result<Vec<u8>, B
     Ok(result)
 }
 
-pub fn ecc_dec(
+fn ecc_dec(
     priv_key: &[u8],
     ciphertext: &[u8],
     sym_alg_id: u8,
@@ -156,7 +152,7 @@ pub fn ecc_dec(
         .map_err(|e| format!("decryption failed: {}", e).into())
 }
 
-pub fn ecdsa_sign(priv_key: &[u8], data: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
+fn ecdsa_sign(priv_key: &[u8], data: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
     let private_key = P256SecretKey::from_pkcs8_der(priv_key)
         .map_err(|e| format!("invalid private key: {}", e))?;
 
@@ -169,11 +165,7 @@ pub fn ecdsa_sign(priv_key: &[u8], data: &[u8]) -> Result<Vec<u8>, Box<dyn Error
     Ok(signature.to_der().as_bytes().to_vec())
 }
 
-pub fn ecdsa_verify(
-    pub_key: &[u8],
-    data: &[u8],
-    sig_bytes: &[u8],
-) -> Result<(), p256::ecdsa::Error> {
+fn ecdsa_verify(pub_key: &[u8], data: &[u8], sig_bytes: &[u8]) -> Result<(), p256::ecdsa::Error> {
     let encoded_point =
         EncodedPoint::<p256::NistP256>::from_bytes(pub_key).expect("Invalid SEC1 public key bytes");
 
@@ -230,6 +222,27 @@ pub fn id_asym_dec(
         }
         RSA_ID => Ok(rsa_dec(priv_key, ciphertext)),
         _ => Err(format!("Unrecognized asymmetric key type: {}", alg_id).into()),
+    }
+}
+
+pub fn id_sign(alg_id: u8, priv_key: &[u8], data: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
+    match alg_id {
+        RSA_ID => Ok(rsa_sign(priv_key, data)),
+        ECC_ID => ecdsa_sign(priv_key, data),
+        _ => Err(format!("Unsupported signature algorithm ID: {}", alg_id).into()),
+    }
+}
+
+pub fn id_verify(
+    alg_id: u8,
+    pub_key: &[u8],
+    data: &[u8],
+    signature: &[u8],
+) -> Result<(), Box<dyn std::error::Error>> {
+    match alg_id {
+        RSA_ID => rsa_verify(pub_key, data, signature).map_err(|e| e.into()),
+        ECC_ID => ecdsa_verify(pub_key, data, signature).map_err(|e| e.into()),
+        _ => Err(format!("Unsupported signature algorithm ID: {}", alg_id).into()),
     }
 }
 

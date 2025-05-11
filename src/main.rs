@@ -157,6 +157,7 @@ fn gen_asym_key(
             &kek,
             &random::get_nonce(),
             &priv_key,
+            None,
         )
         .unwrap(),
         kek_salt: kek_salt_bytes,
@@ -334,31 +335,42 @@ fn main() {
                     };
 
                     let nonce = random::get_nonce();
-                    let ciphertext =
-                        symmetric_encryption::id_encrypt(aead_id, key_ref, &nonce, &plaintext)
-                            .unwrap();
 
-                    let mut f = File::create(&out_path).expect("Failed to create output file");
-
-                    // === Header: MAGIC | KDF_ID | AEAD_ID | SALT_LEN | SALT | KDF PARAMS | FILENAME_LEN
-                    f.write_all(b"ENC1").unwrap();
-                    f.write_all(&[kdf_id, aead_id]).unwrap();
-                    f.write_all(&(salt.len() as u32).to_be_bytes()).unwrap();
-                    f.write_all(salt).unwrap();
+                    // === Construct header in memory
+                    let mut header = Vec::new();
+                    header.extend_from_slice(b"ENC1");
+                    header.extend_from_slice(&[kdf_id, aead_id]);
+                    header.extend_from_slice(&(salt.len() as u32).to_be_bytes());
+                    header.extend_from_slice(salt);
 
                     match kdf_id {
                         ARGON2_ID => {
-                            f.write_all(&params["memory_cost"].to_be_bytes()).unwrap();
-                            f.write_all(&params["time_cost"].to_be_bytes()).unwrap();
-                            f.write_all(&params["parallelism"].to_be_bytes()).unwrap();
+                            header.extend_from_slice(&params["memory_cost"].to_be_bytes());
+                            header.extend_from_slice(&params["time_cost"].to_be_bytes());
+                            header.extend_from_slice(&params["parallelism"].to_be_bytes());
                         }
                         PBKDF2_ID => {
-                            f.write_all(&params["iterations"].to_be_bytes()).unwrap();
+                            header.extend_from_slice(&params["iterations"].to_be_bytes());
                         }
                         _ => panic!("Unknown KDF"),
                     }
 
-                    f.write_all(&filename_len.to_be_bytes()).unwrap();
+                    header.extend_from_slice(&filename_len.to_be_bytes());
+
+                    // === Encrypt with header as AAD
+                    let ciphertext = symmetric_encryption::id_encrypt(
+                        aead_id,
+                        key_ref,
+                        &nonce,
+                        &plaintext,
+                        Some(&header),
+                    )
+                    .unwrap();
+
+                    // === Write output file
+                    let mut f = File::create(&out_path).expect("Failed to create output file");
+
+                    f.write_all(&header).unwrap();
                     f.write_all(&ciphertext).unwrap();
 
                     println!("Symmetric encrypted file written to {}", out_path.display());
@@ -399,21 +411,27 @@ fn main() {
 
                     // === KDF parameters ===
                     let mut params = HashMap::new();
+                    let mut param_bytes = Vec::new(); // Accumulate bytes for AAD
                     match kdf_id {
                         ARGON2_ID => {
                             let mut buf = [0u8; 4];
+
                             f.read_exact(&mut buf).expect("Failed to read memory_cost");
+                            param_bytes.extend_from_slice(&buf);
                             params.insert("memory_cost".to_string(), u32::from_be_bytes(buf));
 
                             f.read_exact(&mut buf).expect("Failed to read time_cost");
+                            param_bytes.extend_from_slice(&buf);
                             params.insert("time_cost".to_string(), u32::from_be_bytes(buf));
 
                             f.read_exact(&mut buf).expect("Failed to read parallelism");
+                            param_bytes.extend_from_slice(&buf);
                             params.insert("parallelism".to_string(), u32::from_be_bytes(buf));
                         }
                         PBKDF2_ID => {
                             let mut buf = [0u8; 4];
                             f.read_exact(&mut buf).expect("Failed to read iterations");
+                            param_bytes.extend_from_slice(&buf);
                             params.insert("iterations".to_string(), u32::from_be_bytes(buf));
                         }
                         _ => panic!("Unknown KDF ID: {}", kdf_id),
@@ -424,10 +442,22 @@ fn main() {
                         .expect("Failed to read filename length");
                     let filename_len = u16::from_be_bytes(filename_len_buf) as usize;
 
+                    // === Read ciphertext after header
                     let mut ciphertext = Vec::new();
                     f.read_to_end(&mut ciphertext)
                         .expect("Failed to read ciphertext");
 
+                    // === Reconstruct header AAD
+                    let mut aad = Vec::new();
+                    aad.extend_from_slice(b"ENC1");
+                    aad.push(kdf_id);
+                    aad.push(aead_id);
+                    aad.extend_from_slice(&salt_len_buf);
+                    aad.extend_from_slice(&salt);
+                    aad.extend_from_slice(&param_bytes);
+                    aad.extend_from_slice(&filename_len_buf);
+
+                    // === Derive key and decrypt
                     let password = get_password(false).expect("Failed to get password");
                     let key = key_derivation::id_derive_key(
                         kdf_id,
@@ -437,9 +467,13 @@ fn main() {
                         &params,
                     );
 
-                    let plaintext_with_filename =
-                        symmetric_encryption::id_decrypt(aead_id, &key, &ciphertext)
-                            .expect("Decryption failed");
+                    let plaintext_with_filename = symmetric_encryption::id_decrypt(
+                        aead_id,
+                        &key,
+                        &ciphertext,
+                        Some(&aad), // <- pass AAD
+                    )
+                    .expect("Decryption failed");
 
                     let total_len = plaintext_with_filename.len();
                     if filename_len > total_len {
@@ -519,6 +553,7 @@ fn main() {
                         keypair.kek_aead,
                         &kek,
                         &keypair.private_key,
+                        None,
                     )
                     .expect("Failed to decrypt private key");
 

@@ -124,7 +124,7 @@ pub fn ecc_enc(pub_key: &[u8], data: &[u8], sym_alg_id: u8) -> Result<Vec<u8>, B
 
     // Encrypt symmetric
     let nonce = get_nonce();
-    let ciphertext = id_encrypt(sym_alg_id, key, &nonce, data);
+    let ciphertext = id_encrypt(sym_alg_id, key, &nonce, data, None);
     // Prepend ephemeral public key to ciphertext
     let eph_pub = p256::PublicKey::from(&ephemeral);
     let mut result = eph_pub.to_encoded_point(false).as_bytes().to_vec();
@@ -152,7 +152,7 @@ pub fn ecc_dec(
     let key_material = Sha256::digest(shared_secret.raw_secret_bytes());
     let key = &key_material[..32];
 
-    id_decrypt(sym_alg_id, key, actual_ciphertext)
+    id_decrypt(sym_alg_id, key, actual_ciphertext, None)
         .map_err(|e| format!("decryption failed: {}", e).into())
 }
 

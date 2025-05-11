@@ -21,6 +21,7 @@ pub fn aead_base<C>(
     key: &[u8],
     nonce: Option<&[u8]>,
     data: &[u8],
+    aad: Option<&[u8]>,
     encrypt: bool,
 ) -> Result<Vec<u8>, AeadError>
 where
@@ -36,37 +37,43 @@ where
         key_len,
         key.len()
     );
-    if nonce.is_some() {
+
+    if let Some(nonce) = nonce {
         assert_eq!(
-            nonce.unwrap().len(),
+            nonce.len(),
             nonce_len,
             "nonce must be {} bytes, got {} bytes",
             nonce_len,
-            nonce.unwrap().len()
+            nonce.len()
         );
     }
 
     let key_arr = Zeroizing::new(GenericArray::clone_from_slice(key));
     let cipher = C::new(&key_arr);
 
-    if encrypt {
-        // Encrypt the data
-        let nonce_arr = GenericArray::from_slice(nonce.unwrap());
-        let ciphertext = cipher.encrypt(nonce_arr, data)?;
+    let aad = aad.unwrap_or(&[]); // Default to empty AAD if not provided
 
-        // Prepend nonce to the ciphertext
+    if encrypt {
+        let nonce_arr = GenericArray::from_slice(nonce.unwrap());
+        let ciphertext = cipher.encrypt(nonce_arr, aead::Payload { msg: data, aad })?;
+
         let mut out = Vec::with_capacity(nonce_len + ciphertext.len());
         out.extend_from_slice(nonce.unwrap());
         out.extend_from_slice(&ciphertext);
         Ok(out)
     } else {
-        // Decrypt: split provided data into nonce||ciphertext
         if data.len() < nonce_len {
             return Err(AeadError);
         }
         let (nonce_bytes, ciphertext) = data.split_at(nonce_len);
         let nonce_arr = GenericArray::from_slice(nonce_bytes);
-        cipher.decrypt(nonce_arr, ciphertext)
+        cipher.decrypt(
+            nonce_arr,
+            aead::Payload {
+                msg: ciphertext,
+                aad,
+            },
+        )
     }
 }
 
@@ -75,10 +82,11 @@ pub fn id_encrypt(
     key: &[u8],
     nonce: &[u8],
     data: &[u8],
+    aad: Option<&[u8]>,
 ) -> Result<Vec<u8>, aead::Error> {
     match alg_id {
-        AES_GCM_ID => aead_base::<Aes256Gcm>(key, Some(nonce), data, true),
-        CHA_CHA_20_POLY_1305_ID => aead_base::<ChaCha20Poly1305>(key, Some(nonce), data, true),
+        AES_GCM_ID => aead_base::<Aes256Gcm>(key, Some(nonce), data, aad, true),
+        CHA_CHA_20_POLY_1305_ID => aead_base::<ChaCha20Poly1305>(key, Some(nonce), data, aad, true),
         _ => panic!(
             "Attempted encryption with unsupported algorithm ID: {}",
             alg_id
@@ -86,10 +94,15 @@ pub fn id_encrypt(
     }
 }
 
-pub fn id_decrypt(alg_id: u8, key: &[u8], data: &[u8]) -> Result<Vec<u8>, aead::Error> {
+pub fn id_decrypt(
+    alg_id: u8,
+    key: &[u8],
+    data: &[u8],
+    aad: Option<&[u8]>,
+) -> Result<Vec<u8>, aead::Error> {
     match alg_id {
-        AES_GCM_ID => aead_base::<Aes256Gcm>(key, None, data, false),
-        CHA_CHA_20_POLY_1305_ID => aead_base::<ChaCha20Poly1305>(key, None, data, false),
+        AES_GCM_ID => aead_base::<Aes256Gcm>(key, None, data, aad, false),
+        CHA_CHA_20_POLY_1305_ID => aead_base::<ChaCha20Poly1305>(key, None, data, aad, false),
         _ => panic!(
             "Attempted decryption with unsupported algorithm ID: {}",
             alg_id
@@ -116,7 +129,7 @@ mod tests {
         // Our encrypt prepends nonce, so expected output is nonce || expected_ciphertext
         let expected_output = [&nonce[..], &expected_ciphertext[..]].concat();
 
-        let ciphertext_with_nonce = id_encrypt(AES_GCM_ID, &key, &nonce, &plaintext).unwrap();
+        let ciphertext_with_nonce = id_encrypt(AES_GCM_ID, &key, &nonce, &plaintext, None).unwrap();
 
         assert_eq!(
             ciphertext_with_nonce, expected_output,
@@ -124,7 +137,8 @@ mod tests {
         );
 
         // Decrypt using full buffer: nonce + ciphertext + tag
-        let decrypted_plaintext = id_decrypt(AES_GCM_ID, &key, &ciphertext_with_nonce).unwrap();
+        let decrypted_plaintext =
+            id_decrypt(AES_GCM_ID, &key, &ciphertext_with_nonce, None).unwrap();
 
         assert_eq!(
             decrypted_plaintext, plaintext,
@@ -146,14 +160,16 @@ mod tests {
         let expected_ciphertext = hex!("00000000010203040506070864a0861575861af460f062c79be643bd5e805cfd345cf389f108670ac76c8cb24c6cfce39ab006ad7516926f09107c693cc136")
 ;
 
-        let ciphertext = id_encrypt(CHA_CHA_20_POLY_1305_ID, &key, &nonce, &plaintext).unwrap();
+        let ciphertext =
+            id_encrypt(CHA_CHA_20_POLY_1305_ID, &key, &nonce, &plaintext, None).unwrap();
 
         assert_eq!(
             ciphertext, expected_ciphertext,
             "ChaCha20Poly1305 ciphertext (with nonce) does not match expected"
         );
 
-        let decrypted_plaintext = id_decrypt(CHA_CHA_20_POLY_1305_ID, &key, &ciphertext).unwrap();
+        let decrypted_plaintext =
+            id_decrypt(CHA_CHA_20_POLY_1305_ID, &key, &ciphertext, None).unwrap();
 
         assert_eq!(
             decrypted_plaintext, plaintext,
@@ -164,12 +180,12 @@ mod tests {
     #[test]
     #[should_panic(expected = "Attempted encryption with unsupported algorithm ID")]
     fn test_encrypt_with_invalid_algorithm() {
-        let _ = id_encrypt(99, b"key", b"nonce", b"data");
+        let _ = id_encrypt(99, b"key", b"nonce", b"data", None);
     }
 
     #[test]
     #[should_panic(expected = "Attempted decryption with unsupported algorithm ID")]
     fn test_decrypt_with_invalid_algorithm() {
-        let _ = id_decrypt(99, b"key", b"data");
+        let _ = id_decrypt(99, b"key", b"data", None);
     }
 }

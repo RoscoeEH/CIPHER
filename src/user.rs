@@ -10,15 +10,18 @@ use std::error::Error;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-// This function returns the *full path* to the RocksDB directory
 fn get_db_path() -> PathBuf {
-    let project_dirs = ProjectDirs::from("com", "cipher", "cipher")
-        .expect("Could not determine project directories");
-
-    let db_dir = project_dirs.data_local_dir().join("db");
+    let db_dir = if cfg!(debug_assertions) {
+        // Dev path
+        PathBuf::from("./profiles")
+    } else {
+        // Production path
+        let project_dirs = ProjectDirs::from("com", "cipher", "cipher")
+            .expect("Could not determine project directories");
+        project_dirs.data_local_dir().join("profiles")
+    };
 
     std::fs::create_dir_all(&db_dir).expect("Failed to create DB directory");
-
     db_dir
 }
 

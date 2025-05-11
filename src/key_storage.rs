@@ -10,16 +10,19 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 fn get_keystore_path() -> PathBuf {
-    let project_dirs = ProjectDirs::from("com", "cipher", "cipher")
-        .expect("Could not determine project directories");
+    let base_dir = if cfg!(debug_assertions) {
+        // Dev path
+        PathBuf::from("./keystore")
+    } else {
+        // Production path
+        let project_dirs = ProjectDirs::from("com", "cipher", "cipher")
+            .expect("Could not determine project directories");
+        project_dirs.data_local_dir().join("keystore")
+    };
 
-    let keystore_dir = project_dirs.data_local_dir().join("keystore");
-
-    std::fs::create_dir_all(&keystore_dir).expect("Failed to create keystore directory");
-
-    keystore_dir
+    std::fs::create_dir_all(&base_dir).expect("Failed to create keystore directory");
+    base_dir
 }
-
 // Rocksdb database for storing keys
 lazy_static! {
     static ref KEY_STORE: Mutex<DB> = {

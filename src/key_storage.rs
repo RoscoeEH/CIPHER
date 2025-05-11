@@ -177,12 +177,12 @@ pub fn list_keys() -> Result<(), Box<dyn Error>> {
         if let Ok(asym) = bincode::deserialize::<AsymKeyPair>(&value) {
             let datetime = u64_to_datetime(asym.created);
             println!(
-                    "- ID: {}\n  Type: Asymmetric (type ID {})\n  Created: {}\n  Public Key Length: {}\n",
-                    asym.id,
-                    asym.key_type,
-                    datetime,
-                    asym.public_key.len(),
-                );
+                "- ID: {}\n  Type: {}\n  Created: {}\n  Public Key Length: {}\n",
+                asym.id,
+                alg_id_to_name(asym.key_type),
+                datetime,
+                asym.public_key.len(),
+            );
             continue;
         }
 

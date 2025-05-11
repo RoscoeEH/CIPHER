@@ -20,7 +20,7 @@ pub const PBKDF2_ID: u8 = 17;
 pub const KDF_NAMES: [&str; 2] = ["argon2", "pbkdf2"];
 
 // Other
-pub const SYM_KEY_LEN: usize = 32;
+pub const SYM_KEY_LEN: usize = 32; // may implement other key sizes in the future
 
 // by birthday paradox it should become a probem at around
 // 4 billion uses so this is a low enough threshold

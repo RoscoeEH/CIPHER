@@ -21,6 +21,18 @@ pub mod utils;
 
 use clap::Parser;
 
+/// Prompts the user to enter a password securely, optionally verifying it by double entry.
+///
+/// This function reads a password from stdin without echoing it to the terminal.
+/// If `verify` is `true`, the user is prompted to re-enter the password for confirmation.
+/// If the entries do not match, an error is returned.
+///
+/// # Arguments
+/// * `verify` - If `true`, requires the user to enter the password twice for verification.
+///
+/// # Returns
+/// * `Ok(Secret<String>)` containing the password if input (and verification) succeeded.
+/// * `Err` if reading fails or the passwords do not match.
 fn get_password(verify: bool) -> Result<Secret<String>, Box<dyn Error>> {
     println!("Enter password: ");
     let password = Secret::new(read_password()?);
@@ -36,6 +48,18 @@ fn get_password(verify: bool) -> Result<Secret<String>, Box<dyn Error>> {
     Ok(password)
 }
 
+/// Parses a string into a `u32`, exiting the program with an error message if parsing fails.
+///
+/// # Arguments
+/// * `field` - The name of the field being parsed, used in the error message.
+/// * `value` - The string value to parse into a `u32`.
+///
+/// # Returns
+/// * The parsed `u32` value.
+///
+/// # Panics
+/// This function does not panic, but it will terminate the program with a message
+/// if parsing fails.
 fn parse_u32_or_exit(field: &str, value: &str) -> u32 {
     value.parse::<u32>().unwrap_or_else(|_| {
         eprintln!("Invalid number for '{}'", field);
@@ -43,12 +67,30 @@ fn parse_u32_or_exit(field: &str, value: &str) -> u32 {
     })
 }
 
+/// Computes the SHA-256 hash of the input data.
+///
+/// # Arguments
+/// * `data` - A byte slice containing the data to hash.
+///
+/// # Returns
+/// * A `Vec<u8>` containing the 32-byte SHA-256 digest.
 fn hash(data: &[u8]) -> Vec<u8> {
     let mut hasher = Sha256::new();
     hasher.update(data);
     hasher.finalize().to_vec()
 }
 
+/// Contains metadata and material for a derived cryptographic key.
+///
+/// This structure holds the derived key along with the parameters
+/// used in its derivation, such as the key derivation function (KDF) ID,
+/// salt, and any algorithm-specific parameters.
+///
+/// # Fields
+/// * `kdf_id` - Identifier of the key derivation function used (e.g., Argon2, PBKDF2).
+/// * `key` - The securely stored derived key material.
+/// * `salt` - The salt used during key derivation.
+/// * `params` - A map of KDF-specific parameters (e.g., iterations, memory cost).
 pub struct DerivedKeyInfo {
     pub kdf_id: u8,
     pub key: Secret<Vec<u8>>,
@@ -87,6 +129,22 @@ pub fn generate_key_from_args(
     }
 }
 
+/// Derives a symmetric encryption key based on CLI input and user profile settings.
+///
+/// This function prompts the user for a password (with optional verification),
+/// selects the appropriate key derivation function (KDF) based on CLI arguments
+/// or a fallback user profile, and derives a key using a randomly generated salt
+/// and the specified parameters.
+///
+/// # Arguments
+/// * `args` - CLI arguments provided by the user, possibly containing a custom KDF name.
+/// * `profile` - The user's cryptographic profile containing default KDF and parameters.
+///
+/// # Returns
+/// * `DerivedKeyInfo` - Struct containing the derived key, salt, KDF ID, and parameters.
+///
+/// # Panics
+/// Panics if an unsupported KDF ID is specified or password input fails.
 pub fn derive_key_from_stored(
     sym_key: &mut key_storage::SymKey,
     password: Secret<String>,
@@ -115,6 +173,29 @@ pub fn derive_key_from_stored(
     })
 }
 
+/// Generates an asymmetric keypair and securely stores it using a password-derived KEK.
+///
+/// This function retrieves the specified user profile (or initializes the default if not found),
+/// determines the algorithm ID from the input name, and generates a new keypair using that algorithm.
+/// The private key is then encrypted using a symmetric key derived from the user's password
+/// and profile-based key derivation settings. The resulting encrypted keypair, along with metadata,
+/// is persisted to the keystore.
+///
+/// # Arguments
+/// * `asym_id` - The name of the asymmetric algorithm (e.g., `"rsa"` or `"ecc"`).
+/// * `password` - The user-supplied password used to derive a Key Encryption Key (KEK).
+/// * `profile_id` - The ID of the user profile specifying encryption and KDF settings.
+/// * `name` - A name to associate with the stored keypair.
+/// * `bits` - Key size or curve size in bits (depending on the algorithm).
+///
+/// # Returns
+/// * `Result<(), Box<dyn Error>>` - Indicates success or failure during key generation or storage.
+///
+/// # Panics
+/// Panics if the algorithm name is invalid, encryption fails, or storage fails unexpectedly.
+///
+/// # Errors
+/// Returns an error if profile lookup, key derivation, or encryption fails.
 fn gen_asym_key(
     asym_id: String,
     password: Secret<String>,
@@ -162,6 +243,27 @@ fn gen_asym_key(
     Ok(())
 }
 
+/// Generates a symmetric key from a password and stores it with metadata for future use.
+///
+/// This function retrieves the specified user profile (or initializes the default if not found),
+/// then derives a symmetric key using the profile's key derivation function (KDF) parameters.
+/// It generates a random salt and uses the provided password to derive the key.
+/// The derived key is not stored directly; instead, a hash of the key is saved for later verification,
+/// along with KDF parameters, salt, and metadata.
+///
+/// # Arguments
+/// * `password` - The user-provided password, securely wrapped in a `Secret<String>`.
+/// * `profile_id` - The ID of the user profile defining the KDF method and its parameters.
+/// * `name` - A unique name to associate with the stored symmetric key.
+///
+/// # Returns
+/// * `Result<(), Box<dyn Error>>` - Indicates success or error in key generation or storage.
+///
+/// # Panics
+/// Panics if storing the key fails unexpectedly.
+///
+/// # Errors
+/// Returns an error if the profile cannot be retrieved or initialized, or if key derivation fails.
 fn gen_sym_key(
     password: Secret<String>,
     profile_id: String,
@@ -189,6 +291,20 @@ fn gen_sym_key(
     Ok(())
 }
 
+/// Checks if a key with the given ID exists in the keystore.
+///
+/// This function attempts to look up both symmetric (`SymKey`) and asymmetric (`AsymKeyPair`)
+/// key entries with the provided ID. If either exists, the function returns `true`.
+///
+/// # Arguments
+/// * `id` - The string identifier of the key to check for existence.
+///
+/// # Returns
+/// * `Result<bool, Box<dyn Error>>` - Returns `Ok(true)` if a key with the given ID exists,
+///   `Ok(false)` if not, or an `Err` if an unexpected error occurs during lookup.
+///
+/// # Notes
+/// Errors from individual key lookups are ignored (assumed as "not found").
 fn does_key_exist(id: String) -> Result<bool, Box<dyn Error>> {
     // Check if a symmetric or asymmetric key with the same ID already exists
     let sym_key_exists = match key_storage::get_key::<key_storage::SymKey>(id.as_str()) {
@@ -203,6 +319,17 @@ fn does_key_exist(id: String) -> Result<bool, Box<dyn Error>> {
     Ok(sym_key_exists || asym_key_exists)
 }
 
+/// Reads the entire contents of a file into a byte vector.
+///
+/// Opens the file at the specified path and reads all bytes into memory.
+/// Useful for loading binary or text data as raw bytes.
+///
+/// # Arguments
+/// * `path` - A string slice representing the path to the file.
+///
+/// # Returns
+/// * `Result<Vec<u8>, Box<dyn Error>>` - Returns a `Vec<u8>` with the file contents on success,
+///   or an error boxed as `Box<dyn Error>` if the file cannot be opened or read.
 fn read_file(path: &str) -> Result<Vec<u8>, Box<dyn Error>> {
     let mut file = File::open(path)?;
     let mut contents = Vec::new();

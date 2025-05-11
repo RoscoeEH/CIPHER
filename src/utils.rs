@@ -2,6 +2,17 @@ use crate::constants::*;
 use chrono::{DateTime, Utc};
 use std::error::Error;
 
+/// Converts a human-readable algorithm name into its corresponding algorithm ID.
+///
+/// Accepts names like `"aes-gcm"`, `"chacha20poly1305"`, `"rsa"`, `"ecc"`,
+/// `"argon2"`, and `"pbkdf2"`, and returns the corresponding predefined constant ID.
+///
+/// # Arguments
+/// * `name` - A string slice representing the algorithm name (case-insensitive).
+///
+/// # Returns
+/// * `Ok(u8)` with the algorithm ID if recognized.
+/// * `Err` if the algorithm name is unknown.
 pub fn alg_name_to_id(name: &str) -> Result<u8, Box<dyn Error>> {
     match name.to_lowercase().as_str() {
         "aes-gcm" => Ok(AES_GCM_ID),
@@ -14,6 +25,16 @@ pub fn alg_name_to_id(name: &str) -> Result<u8, Box<dyn Error>> {
     }
 }
 
+/// Returns the string name of an algorithm given its numeric ID.
+///
+/// Maps known algorithm IDs to human-readable names like `"aes-gcm"`, `"rsa"`, etc.
+/// If the ID is not recognized, returns `"unknown"`.
+///
+/// # Arguments
+/// * `id` - A `u8` representing the algorithm identifier.
+///
+/// # Returns
+/// * A `&'static str` with the name of the algorithm, or `"unknown"` if unrecognized.
 pub fn alg_id_to_name(id: u8) -> &'static str {
     match id {
         AES_GCM_ID => "aes-gcm",

@@ -31,7 +31,28 @@ use crate::constants::*;
 use crate::random::*;
 use crate::symmetric_encryption::*;
 
-// RSA
+// === RSA Related Algorithms ===
+/// Generates a new RSA key pair with the given number of bits.
+///
+/// This function creates a new RSA private key and derives the corresponding
+/// public key. Both keys are encoded in PKCS#1 DER format. The private key is
+/// wrapped in a [`Secret<Vec<u8>>`] to help prevent accidental exposure.
+///
+/// # Arguments
+///
+/// * `bits` - The number of bits for the RSA key. Typical values are 2048 or 4096.
+///
+/// # Returns
+///
+/// A tuple containing:
+/// - `Secret<Vec<u8>>`: The DER-encoded RSA private key wrapped in `Secret`.
+/// - `Vec<u8>`: The DER-encoded RSA public key.
+///
+/// # Panics
+///
+/// This function will panic if:
+/// - RSA key generation fails.
+/// - DER encoding of the private or public key fails.
 fn rsa_key_gen(bits: usize) -> (Secret<Vec<u8>>, Vec<u8>) {
     let mut rng = thread_rng();
     let private_key = RsaPrivateKey::new(&mut rng, bits).expect("RSA key gen failed");
@@ -55,6 +76,25 @@ fn rsa_key_gen(bits: usize) -> (Secret<Vec<u8>>, Vec<u8>) {
     keypair
 }
 
+/// Encrypts data using an RSA public key with PKCS#1 v1.5 padding.
+///
+/// The provided public key must be in PKCS#1 DER format. This function
+/// uses the `Pkcs1v15Encrypt` scheme to perform the encryption.
+///
+/// # Arguments
+///
+/// * `pub_key` - A byte slice containing the DER-encoded RSA public key.
+/// * `data` - The plaintext data to encrypt.
+///
+/// # Returns
+///
+/// A `Vec<u8>` containing the encrypted ciphertext.
+///
+/// # Panics
+///
+/// This function will panic if:
+/// - The public key cannot be parsed from DER format.
+/// - The encryption operation fails.
 fn rsa_enc(pub_key: &[u8], data: &[u8]) -> Vec<u8> {
     let public_key = RsaPublicKey::from_pkcs1_der(pub_key).expect("Failed to parse DER public key");
 
@@ -63,6 +103,25 @@ fn rsa_enc(pub_key: &[u8], data: &[u8]) -> Vec<u8> {
         .expect("RSA encryption failed")
 }
 
+/// Decrypts RSA-encrypted data using a private key with PKCS#1 v1.5 padding.
+///
+/// The provided private key must be in PKCS#1 DER format. This function
+/// uses the `Pkcs1v15Encrypt` scheme to perform the decryption.
+///
+/// # Arguments
+///
+/// * `priv_key` - A byte slice containing the DER-encoded RSA private key.
+/// * `ciphertext` - The encrypted data to decrypt.
+///
+/// # Returns
+///
+/// A `Vec<u8>` containing the decrypted plaintext data.
+///
+/// # Panics
+///
+/// This function will panic if:
+/// - The private key cannot be parsed from DER format.
+/// - The decryption operation fails.
 fn rsa_dec(priv_key: &[u8], ciphertext: &[u8]) -> Vec<u8> {
     let private_key =
         RsaPrivateKey::from_pkcs1_der(priv_key).expect("Failed to parse DER private key");
@@ -72,6 +131,25 @@ fn rsa_dec(priv_key: &[u8], ciphertext: &[u8]) -> Vec<u8> {
         .expect("RSA decryption failed")
 }
 
+/// Signs data using an RSA private key with PKCS#1 v1.5 padding and SHA-256.
+///
+/// The private key must be provided in PKCS#1 DER format. This function uses
+/// the `RsaSigningKey` with the SHA-256 hashing algorithm to produce the signature.
+///
+/// # Arguments
+///
+/// * `priv_key` - A byte slice containing the DER-encoded RSA private key.
+/// * `data` - The message data to sign.
+///
+/// # Returns
+///
+/// A `Vec<u8>` containing the RSA signature.
+///
+/// # Panics
+///
+/// This function will panic if:
+/// - The private key cannot be parsed from DER format.
+/// - The signing operation fails (e.g., internal errors in RNG or key usage).
 fn rsa_sign(priv_key: &[u8], data: &[u8]) -> Vec<u8> {
     let private_key =
         RsaPrivateKey::from_pkcs1_der(priv_key).expect("Failed to parse DER private key");
@@ -85,6 +163,27 @@ fn rsa_sign(priv_key: &[u8], data: &[u8]) -> Vec<u8> {
     signature.to_vec()
 }
 
+/// Verifies an RSA signature using a public key with PKCS#1 v1.5 padding and SHA-256.
+///
+/// The public key must be provided in PKCS#1 DER format. This function checks
+/// whether the given signature is valid for the provided message and public key,
+/// using the `RsaVerifyingKey` and SHA-256 hashing algorithm.
+///
+/// # Arguments
+///
+/// * `pub_key` - A byte slice containing the DER-encoded RSA public key.
+/// * `data` - The original message data that was signed.
+/// * `signature` - The signature to verify.
+///
+/// # Returns
+///
+/// * `Ok(())` if the signature is valid.
+/// * `Err(rsa::signature::Error)` if the signature is invalid or malformed.
+///
+/// # Panics
+///
+/// This function will panic if:
+/// - The public key cannot be parsed from DER format.
 fn rsa_verify(pub_key: &[u8], data: &[u8], signature: &[u8]) -> Result<(), rsa::signature::Error> {
     let public_key = RsaPublicKey::from_pkcs1_der(pub_key).expect("Failed to parse DER public key");
     let verifying_key = RsaVerifyingKey::<Sha256>::new(public_key.clone());
@@ -94,8 +193,25 @@ fn rsa_verify(pub_key: &[u8], data: &[u8], signature: &[u8]) -> Result<(), rsa::
     verifying_key.verify(data, &sig)
 }
 
-// ECC
+// === ECC Related Operations ===
 
+/// Generates an ECC key pair using the NIST P-256 curve.
+///
+/// This function creates a new elliptic curve private key and derives the
+/// corresponding public key. The private key is encoded in PKCS#8 DER format
+/// and wrapped in a [`Secret<Vec<u8>>`] to help protect sensitive material.
+/// The public key is returned as an uncompressed SEC1-encoded byte vector.
+///
+/// # Returns
+///
+/// A tuple containing:
+/// - `Secret<Vec<u8>>`: The DER-encoded ECC private key wrapped in `Secret`.
+/// - `Vec<u8>`: The SEC1-encoded ECC public key (uncompressed).
+///
+/// # Panics
+///
+/// This function will panic if:
+/// - The private key fails to encode into PKCS#8 DER format.
 fn ecc_key_gen() -> (Secret<Vec<u8>>, Vec<u8>) {
     // Generate a secret key
     let secret = P256SecretKey::random(&mut OsRng);
@@ -111,6 +227,31 @@ fn ecc_key_gen() -> (Secret<Vec<u8>>, Vec<u8>) {
     (private_key, public_key)
 }
 
+/// Encrypts data using ECC-based hybrid encryption with the NIST P-256 curve.
+///
+/// This function performs an ephemeral ECDH key exchange using the recipient's
+/// public key to derive a symmetric key via SHA-256. It then encrypts the data
+/// using the derived symmetric key and a specified symmetric algorithm.
+///
+/// The final ciphertext includes the ephemeral public key (SEC1 uncompressed) prepended
+/// to the encrypted data, allowing the recipient to perform key agreement during decryption.
+///
+/// # Arguments
+///
+/// * `pub_key` - A byte slice containing the recipient's SEC1-encoded uncompressed ECC public key.
+/// * `data` - The plaintext data to encrypt.
+/// * `sym_alg_id` - An identifier indicating which symmetric algorithm to use.
+///
+/// # Returns
+///
+/// * `Ok(Vec<u8>)` - The encrypted payload, with the ephemeral public key prepended.
+/// * `Err(Box<dyn Error>)` - If encryption fails due to algorithm issues or encoding errors.
+///
+/// # Panics
+///
+/// This function will panic if:
+/// - The provided public key is not valid SEC1-encoded format.
+/// - The key derivation digest output is not 32 bytes.
 fn ecc_enc(pub_key: &[u8], data: &[u8], sym_alg_id: u8) -> Result<Vec<u8>, Box<dyn Error>> {
     let encoded_point =
         EncodedPoint::<p256::NistP256>::from_bytes(pub_key).expect("Invalid SEC1 public key bytes");
@@ -147,6 +288,29 @@ fn ecc_enc(pub_key: &[u8], data: &[u8], sym_alg_id: u8) -> Result<Vec<u8>, Box<d
     Ok(result)
 }
 
+/// Decrypts data that was encrypted using ECC-based hybrid encryption with the NIST P-256 curve.
+///
+/// This function:
+/// - Extracts the ephemeral public key from the ciphertext (first 65 bytes, SEC1 uncompressed format),
+/// - Performs ECDH using the recipient's private key,
+/// - Derives a 256-bit symmetric key using SHA-256,
+/// - And decrypts the payload using the specified symmetric algorithm.
+///
+/// # Arguments
+///
+/// * `priv_key` - DER-encoded ECC private key in PKCS#8 format.
+/// * `ciphertext` - The encrypted data, with the first 65 bytes containing the ephemeral public key.
+/// * `sym_alg_id` - An identifier for the symmetric encryption algorithm used.
+///
+/// # Returns
+///
+/// * `Ok(Vec<u8>)` - The decrypted plaintext.
+/// * `Err(Box<dyn std::error::Error>)` - If decryption or any part of the key processing fails.
+///
+/// # Panics
+///
+/// This function panics if the SHA-256 digest output cannot be converted into a 32-byte array.
+/// (This is unlikely and would indicate an internal logic error.)
 fn ecc_dec(
     priv_key: &[u8],
     ciphertext: &[u8],
@@ -191,6 +355,25 @@ fn ecc_dec(
     .map_err(|e| format!("decryption failed: {}", e).into())
 }
 
+/// Signs data using ECDSA over the NIST P-256 curve with SHA-256 and deterministic (RFC 6979) signing.
+///
+/// This function loads a DER-encoded private key, creates an ECDSA signing key,
+/// and produces a signature over the provided message using deterministic nonce generation.
+///
+/// # Arguments
+///
+/// * `priv_key` - A byte slice containing the PKCS#8 DER-encoded ECC private key.
+/// * `data` - The message bytes to sign.
+///
+/// # Returns
+///
+/// * `Ok(Vec<u8>)` - The DER-encoded ECDSA signature.
+/// * `Err(Box<dyn Error>)` - If the private key is invalid or signing fails.
+///
+/// # Notes
+///
+/// - Uses deterministic signing as per [RFC 6979].
+/// - The output signature is encoded in ASN.1 DER format.
 fn ecdsa_sign(priv_key: &[u8], data: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
     let private_key = P256SecretKey::from_pkcs8_der(priv_key)
         .map_err(|e| format!("invalid private key: {}", e))?;
@@ -204,6 +387,25 @@ fn ecdsa_sign(priv_key: &[u8], data: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
     Ok(signature.to_der().as_bytes().to_vec())
 }
 
+/// Verifies an ECDSA signature using the NIST P-256 curve and SHA-256.
+///
+/// This function takes a SEC1-encoded public key, a message, and a DER-encoded signature.
+/// It reconstructs the verifying key and checks the validity of the signature.
+///
+/// # Arguments
+///
+/// * `pub_key` - A byte slice containing the SEC1-encoded uncompressed ECC public key.
+/// * `data` - The original message that was signed.
+/// * `sig_bytes` - The DER-encoded ECDSA signature.
+///
+/// # Returns
+///
+/// * `Ok(())` - If the signature is valid.
+/// * `Err(p256::ecdsa::Error)` - If the signature is malformed or invalid.
+///
+/// # Panics
+///
+/// This function panics if the public key bytes cannot be parsed into a valid SEC1 point.
 fn ecdsa_verify(pub_key: &[u8], data: &[u8], sig_bytes: &[u8]) -> Result<(), p256::ecdsa::Error> {
     let encoded_point =
         EncodedPoint::<p256::NistP256>::from_bytes(pub_key).expect("Invalid SEC1 public key bytes");
@@ -219,6 +421,26 @@ fn ecdsa_verify(pub_key: &[u8], data: &[u8], sig_bytes: &[u8]) -> Result<(), p25
     verifying_key.verify(data, &signature)
 }
 
+/// Generates a public/private keypair for a specified asymmetric algorithm.
+///
+/// Depending on the provided algorithm ID, this function delegates to the appropriate
+/// key generation routine (e.g., RSA or ECC). RSA key length can be customized via `bits`.
+///
+/// # Arguments
+///
+/// * `alg_id` - An identifier specifying the type of asymmetric algorithm (e.g., ECC or RSA).
+/// * `bits` - Optional RSA key size in bits; defaults to 4096 if not provided.
+///
+/// # Returns
+///
+/// * `Ok((Secret<Vec<u8>>, Vec<u8>))` - A tuple containing the private key (wrapped in `Secret`) and the public key bytes.
+/// * `Err(Box<dyn std::error::Error>)` - If the algorithm ID is unrecognized.
+///
+/// # Notes
+///
+/// - ECC keys are generated using the NIST P-256 curve.
+/// - RSA keys are encoded in PKCS#1 DER format.
+/// - The public key is returned in a raw byte-encoded format appropriate for the algorithm.
 pub fn id_keypair_gen(
     alg_id: u8,
     bits: Option<usize>,
@@ -230,6 +452,33 @@ pub fn id_keypair_gen(
     }
 }
 
+/// Encrypts data using the specified asymmetric algorithm and public key.
+///
+/// This function routes encryption to the appropriate implementation based on the
+/// provided algorithm ID. ECC encryption uses hybrid encryption (ECDH + symmetric),
+/// requiring an additional symmetric algorithm ID. RSA encryption uses direct encryption.
+///
+/// # Arguments
+///
+/// * `alg_id` - Identifier for the asymmetric encryption algorithm (e.g., ECC or RSA).
+/// * `pub_key` - Byte slice containing the public key.
+/// * `data` - The plaintext data to encrypt.
+/// * `sym_alg_id` - Optional symmetric algorithm ID (required for ECC hybrid encryption).
+///
+/// # Returns
+///
+/// * `Ok(Vec<u8>)` - The encrypted ciphertext.
+/// * `Err(Box<dyn std::error::Error>)` - If encryption fails or parameters are invalid.
+///
+/// # Notes
+///
+/// - For ECC, a symmetric key is derived via ECDH and used to encrypt `data` using the specified symmetric algorithm.
+/// - For RSA, data is encrypted directly with the public key using PKCS#1 v1.5 padding.
+///
+/// # Errors
+///
+/// - Returns an error if `sym_alg_id` is missing when `alg_id` is ECC.
+/// - Returns an error for unrecognized algorithm identifiers.
 pub fn id_asym_enc(
     alg_id: u8,
     pub_key: &[u8],
@@ -247,6 +496,33 @@ pub fn id_asym_enc(
     }
 }
 
+/// Decrypts data using the specified asymmetric algorithm and private key.
+///
+/// This function dispatches decryption logic based on the provided algorithm ID.
+/// ECC decryption involves ECDH key agreement and symmetric decryption, requiring
+/// an additional symmetric algorithm ID. RSA decryption uses PKCS#1 v1.5.
+///
+/// # Arguments
+///
+/// * `alg_id` - Identifier for the asymmetric algorithm (e.g., ECC or RSA).
+/// * `priv_key` - Byte slice containing the private key.
+/// * `ciphertext` - The encrypted data to decrypt.
+/// * `sym_alg_id` - Optional symmetric algorithm ID (required for ECC hybrid decryption).
+///
+/// # Returns
+///
+/// * `Ok(Vec<u8>)` - The decrypted plaintext.
+/// * `Err(Box<dyn std::error::Error>)` - If decryption fails or parameters are invalid.
+///
+/// # Notes
+///
+/// - ECC decryption reconstructs a shared secret from the ephemeral key and derives a symmetric key to decrypt the message.
+/// - RSA decryption is performed directly using PKCS#1 v1.5.
+///
+/// # Errors
+///
+/// - Returns an error if `sym_alg_id` is not provided when `alg_id` is ECC.
+/// - Returns an error if the `alg_id` is unrecognized or decryption fails.
 pub fn id_asym_dec(
     alg_id: u8,
     priv_key: &[u8],
@@ -264,6 +540,26 @@ pub fn id_asym_dec(
     }
 }
 
+/// Signs data using the specified asymmetric signature algorithm and private key.
+///
+/// This function delegates to the appropriate signing implementation (RSA or ECDSA)
+/// based on the provided algorithm ID.
+///
+/// # Arguments
+///
+/// * `alg_id` - Identifier for the signature algorithm (e.g., RSA or ECC).
+/// * `priv_key` - Byte slice containing the private key (format depends on algorithm).
+/// * `data` - The message bytes to be signed.
+///
+/// # Returns
+///
+/// * `Ok(Vec<u8>)` - The generated signature (DER-encoded for ECC).
+/// * `Err(Box<dyn Error>)` - If the algorithm ID is unsupported or signing fails.
+///
+/// # Notes
+///
+/// - RSA signatures are typically PKCS#1 v1.5 with SHA-256.
+/// - ECC signatures use ECDSA over the NIST P-256 curve with deterministic nonce (RFC 6979).
 pub fn id_sign(alg_id: u8, priv_key: &[u8], data: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
     match alg_id {
         RSA_ID => Ok(rsa_sign(priv_key, data)),
@@ -272,6 +568,28 @@ pub fn id_sign(alg_id: u8, priv_key: &[u8], data: &[u8]) -> Result<Vec<u8>, Box<
     }
 }
 
+/// Verifies a digital signature using the specified asymmetric signature algorithm and public key.
+///
+/// This function delegates to the appropriate verification implementation (RSA or ECDSA)
+/// based on the provided algorithm ID.
+///
+/// # Arguments
+///
+/// * `alg_id` - Identifier for the signature algorithm (e.g., RSA or ECC).
+/// * `pub_key` - Byte slice containing the public key (format depends on algorithm).
+/// * `data` - The original message that was signed.
+/// * `signature` - The signature bytes to verify (DER-encoded for ECC).
+///
+/// # Returns
+///
+/// * `Ok(())` - If the signature is valid.
+/// * `Err(Box<dyn std::error::Error>)` - If verification fails or the algorithm ID is unsupported.
+///
+/// # Notes
+///
+/// - RSA verification uses PKCS#1 v1.5 padding and SHA-256.
+/// - ECC verification uses ECDSA with SHA-256 over the NIST P-256 curve.
+/// - This function panics if the provided key formats are invalid.
 pub fn id_verify(
     alg_id: u8,
     pub_key: &[u8],
@@ -285,7 +603,7 @@ pub fn id_verify(
     }
 }
 
-// Testing
+// Testing for encryption, decryption, signing and verifying
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -294,13 +612,13 @@ mod tests {
         let plaintext = b"Test vector: RSA encryption works!";
         let key_bits = 2048;
 
-        // Generate RSA keypair using your provided method
+        // Generate RSA keypair
         let (priv_key, pub_key) = rsa_key_gen(key_bits);
 
-        // Encrypt using public key
+        // Encrypt
         let ciphertext = rsa_enc(&pub_key, plaintext);
 
-        // Decrypt using private key
+        // Decrypt
         let decrypted = rsa_dec(&priv_key.expose_secret(), &ciphertext);
 
         // Verify the output matches input
@@ -312,6 +630,7 @@ mod tests {
     #[test]
     fn test_rsa_sign_verify_kat() {
         let message = b"Test vector: RSA signing works!";
+        // Generate RSA keypair
         let (priv_key_der, pub_key_der) = rsa_key_gen(2048); // Should return (Vec<u8>, Vec<u8>)
 
         // Sign
@@ -324,16 +643,16 @@ mod tests {
 
     #[test]
     fn test_ecc_enc_dec_kat() {
-        let sym_alg_id = 1; // Replace with your actual symmetric algorithm ID (e.g. AES-GCM = 1)
+        let sym_alg_id = AES_GCM_ID; // Tests with aes-gcm
         let plaintext = b"Test vector: ECC encryption works!";
 
-        // Generate keypair using your provided method
+        // Generate keypair
         let (priv_key, pub_key) = ecc_key_gen();
 
-        // Encrypt using public key
+        // Encrypt
         let ciphertext = ecc_enc(&pub_key, plaintext, sym_alg_id).expect("ECC encryption failed");
 
-        // Decrypt using private key
+        // Decrypt
         let decrypted = ecc_dec(&priv_key.expose_secret(), &ciphertext, sym_alg_id)
             .expect("ECC decryption failed");
 
@@ -346,6 +665,7 @@ mod tests {
     #[test]
     fn test_ecdsa_sign_verify_kat() {
         let message = b"Test vector: ECDSA signing works!";
+        // Generate keypair
         let (priv_key_der, pub_key_sec1) = ecc_key_gen(); // Should return (Vec<u8>, Vec<u8>)
 
         // Sign

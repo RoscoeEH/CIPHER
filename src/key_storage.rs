@@ -9,6 +9,7 @@ use std::error::Error;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+// Enables storage of the keys within the application instead of where you run the program
 fn get_keystore_path() -> PathBuf {
     let base_dir = if cfg!(debug_assertions) {
         // Dev path
@@ -23,6 +24,7 @@ fn get_keystore_path() -> PathBuf {
     std::fs::create_dir_all(&base_dir).expect("Failed to create keystore directory");
     base_dir
 }
+
 // Rocksdb database for storing keys
 lazy_static! {
     static ref KEY_STORE: Mutex<DB> = {
@@ -36,21 +38,22 @@ pub trait HasId {
     fn id(&self) -> &str;
 }
 
-/// Represents an asymmetric key pair used in cryptographic operations.
+/// Represents an asymmetric key pair along with metadata and encryption context.
 ///
-/// This structure holds both the public and private keys, along with metadata
-/// such as an identifier, key type, and creation timestamp.
+/// This struct stores a public/private keypair, where the private key is intended to be
+/// stored in encrypted form using a key-encryption key (KEK) derived from a user secret.
 ///
-/// Fields:
-/// - `id`: A unique identifier for the key pair.
-/// - `key_type`: An unsigned integer indicating the type of the key (e.g., RSA, ECC).
-/// - `public_key`: The public portion of the key pair, used for encryption or signature verification.
-/// - `private_key`: The private portion of the key pair, used for decryption or signing. Should be handled securely.
-/// - `created`: A UNIX timestamp indicating when the key pair was generated.
+/// # Fields
 ///
-/// This struct derives `Serialize`, `Deserialize`, and `Debug` for convenient
-/// serialization and debugging support. Ensure the `private_key` is protected
-/// when serialized or logged.
+/// * `id` - A unique identifier for the key pair.
+/// * `key_type` - The type of asymmetric key (e.g., `RSA_ID`, `ECC_ID`).
+/// * `public_key` - The public key bytes, typically in DER or SEC1 format.
+/// * `private_key` - The encrypted private key bytes (encrypted with KEK).
+/// * `kek_salt` - Salt used for deriving the KEK from a password.
+/// * `kek_kdf` - Identifier for the key derivation function (e.g., `ARGON2_ID`, `PBKDF2_ID`).
+/// * `kek_params` - Parameters used for KEK derivation (e.g., memory cost, iterations).
+/// * `kek_aead` - Identifier for the AEAD algorithm used to encrypt the private key.
+/// * `created` - UNIX timestamp (in seconds) marking when the key pair was created.
 #[derive(Serialize, Deserialize, Debug)]
 pub struct AsymKeyPair {
     pub id: String,
@@ -70,21 +73,20 @@ impl HasId for AsymKeyPair {
     }
 }
 
-/// Represents an symmetric key pair used in cryptographic operations.
+/// Represents a symmetric key configuration derived from a password or secret.
 ///
-/// This structure holds the salt so the key can be re-derived, along with metadata
-/// such as an identifier, the derivation algorithm used, hash of the key, creation timestamp, and number of times it has been used.
+/// This struct stores metadata necessary to re-derive the symmetric key, verify it,
+/// and track its usage over time.
 ///
-/// Fields:
-/// - `id`: A unique identifier for the key.
-/// - `salt`: The salt used in generating the key.
-/// - `derivation_method_id`: The KDF algorithm used to derive the key.
-/// - `verification_hash`: A hash of the resulting key for verifying correctness.
-/// - `created`: A UNIX timestamp indicating when the key pair was generated.
-/// = `use_count`: A count of the number of things the key has been used to avoid nonce collisions.
+/// # Fields
 ///
-/// This struct derives `Serialize`, `Deserialize`, and `Debug` for convenient
-/// serialization and debugging support.
+/// * `id` - A unique identifier for the symmetric key.
+/// * `salt` - Salt used in the key derivation process.
+/// * `derivation_method_id` - Identifier for the key derivation algorithm (e.g., `ARGON2_ID`, `PBKDF2_ID`).
+/// * `derivation_params` - Parameters specific to the KDF (e.g., iterations, memory cost).
+/// * `verification_hash` - A truncated or full hash used to verify correctness of derived keys.
+/// * `created` - UNIX timestamp indicating when the key configuration was created.
+/// * `use_count` - Number of times the key has been used for encryption or decryption.
 #[derive(Serialize, Deserialize, Debug)]
 pub struct SymKey {
     pub id: String,
@@ -165,6 +167,27 @@ pub fn get_key<T: DeserializeOwned>(id: &str) -> Result<Option<T>, Box<dyn std::
     }
 }
 
+/// Lists all stored keys from the key store.
+///
+/// This function iterates through all entries in the global `KEY_STORE`, attempts to
+/// deserialize each value as either an `AsymKeyPair` or `SymKey`, and prints human-readable
+/// metadata for each recognized key.
+///
+/// # Returns
+/// * `Ok(())` on success.
+/// * `Err` if any key retrieval or deserialization operation fails.
+///
+/// # Output
+/// Prints:
+/// - Key ID
+/// - Key type (asymmetric with algorithm name or symmetric with KDF ID)
+/// - Creation timestamp
+/// - Additional metadata like public key length or use count.
+///
+/// # Errors
+/// Returns an error if:
+/// - Iteration over the key store fails.
+/// - A value in the key store cannot be read.
 pub fn list_keys() -> Result<(), Box<dyn Error>> {
     let db = KEY_STORE.lock().unwrap();
     let iter = db.iterator(rocksdb::IteratorMode::Start);
@@ -202,6 +225,23 @@ pub fn list_keys() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Wipes all data from the key store by deleting and recreating the underlying database.
+///
+/// This function permanently deletes the RocksDB instance at the configured key store path,
+/// removing all stored keys. It then reinitializes the database to ensure it's ready for reuse.
+///
+/// # Returns
+/// * `Ok(())` on success.
+/// * `Err` if the database cannot be destroyed or recreated.
+///
+/// # Side Effects
+/// - Permanently deletes all keys.
+/// - Reinitializes an empty key store at the same location.
+///
+/// # Errors
+/// Returns an error if:
+/// - The key store cannot be destroyed (e.g., path permissions issues (may implement this)).
+/// - The key store cannot be recreated.
 pub fn wipe_keystore() -> Result<(), Box<dyn Error>> {
     let keystore_path = get_keystore_path();
 

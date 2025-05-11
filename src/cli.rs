@@ -4,7 +4,26 @@ use clap::{Args, Parser, Subcommand};
 use std::error::Error;
 use std::path::Path;
 
-// Validation checks
+// === Validation checks ===
+
+/// Validates that a given file system path exists.
+///
+/// This function checks whether the path represented by the input string exists
+/// in the file system. It returns an error if the path is not found.
+///
+/// # Arguments
+///
+/// * `path_str` - A string slice representing the file system path to validate.
+///
+/// # Returns
+///
+/// * `Ok(())` - If the path exists.
+/// * `Err(Box<dyn Error>)` - If the path does not exist.
+///
+/// # Errors
+///
+/// Returns an error with a message indicating the path was not found if `path_str`
+/// does not correspond to an existing file or directory.
 fn validate_path(path_str: &str) -> Result<(), Box<dyn Error>> {
     let path = Path::new(path_str);
     if path.exists() {
@@ -14,6 +33,23 @@ fn validate_path(path_str: &str) -> Result<(), Box<dyn Error>> {
     }
 }
 
+/// Validates that the provided key derivation function (KDF) name is supported.
+///
+/// This function checks whether the given KDF name exists in the predefined list
+/// of supported KDF algorithms (`KDF_NAMES`). The comparison is case-insensitive.
+///
+/// # Arguments
+///
+/// * `kdf` - A reference to a `String` representing the name of the KDF algorithm.
+///
+/// # Returns
+///
+/// * `Ok(())` - If the KDF name is recognized.
+/// * `Err(Box<dyn Error>)` - If the KDF name is not supported.
+///
+/// # Errors
+///
+/// Returns an error with a message if the provided KDF name is not in `KDF_NAMES`.
 fn valid_kdf(kdf: &String) -> Result<(), Box<dyn Error>> {
     if !KDF_NAMES.contains(&kdf.to_lowercase().as_str()) {
         return Err(format!("Did not recognize KDF: {}", kdf).into());
@@ -21,6 +57,23 @@ fn valid_kdf(kdf: &String) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Validates that the provided AEAD (Authenticated Encryption with Associated Data) algorithm name is supported.
+///
+/// This function checks whether the given AEAD algorithm name exists in the predefined list
+/// of supported AEAD algorithms (`AEAD_NAMES`). The check is case-insensitive.
+///
+/// # Arguments
+///
+/// * `aead` - A reference to a `String` representing the AEAD algorithm name.
+///
+/// # Returns
+///
+/// * `Ok(())` - If the AEAD name is recognized.
+/// * `Err(Box<dyn Error>)` - If the AEAD name is not supported.
+///
+/// # Errors
+///
+/// Returns an error with a message if the provided AEAD name is not in `AEAD_NAMES`.
 fn valid_aead(aead: &String) -> Result<(), Box<dyn Error>> {
     if !AEAD_NAMES.contains(&aead.to_lowercase().as_str()) {
         return Err(format!("Did not recognize aead: {}", aead).into());
@@ -28,6 +81,23 @@ fn valid_aead(aead: &String) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Validates that the provided asymmetric algorithm name is supported.
+///
+/// This function checks whether the given asymmetric algorithm name exists in the predefined
+/// list of supported algorithms (`ASYM_NAMES`). The comparison is case-insensitive.
+///
+/// # Arguments
+///
+/// * `asym` - A reference to a `String` representing the asymmetric algorithm name.
+///
+/// # Returns
+///
+/// * `Ok(())` - If the asymmetric algorithm name is recognized.
+/// * `Err(Box<dyn Error>)` - If the name is not supported.
+///
+/// # Errors
+///
+/// Returns an error with a message if the provided name is not in `ASYM_NAMES`.
 fn valid_asym(asym: &String) -> Result<(), Box<dyn Error>> {
     if !ASYM_NAMES.contains(&asym.to_lowercase().as_str()) {
         return Err(format!("Did not recognize asym: {}", asym).into());
@@ -35,10 +105,29 @@ fn valid_asym(asym: &String) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+// Supports validate_args
 pub trait Validatable {
     fn validate(&self) -> Result<(), Box<dyn Error>>;
 }
 
+/// Validates command-line arguments by calling the `validate` method on a `Validatable` type.
+///
+/// This function is intended to be used in CLI applications. It calls the `validate`
+/// method on the given arguments object. If validation fails, it prints an error message
+/// to stderr (including the source of the error, if available) and exits the process with code 1.
+///
+/// # Type Parameters
+///
+/// * `T` - A type that implements the `Validatable` trait.
+///
+/// # Arguments
+///
+/// * `args` - A reference to a struct implementing `Validatable`, representing parsed CLI arguments.
+///
+/// # Behavior
+///
+/// * Prints an error and exits the program if validation fails.
+/// * Continues execution silently if validation succeeds.
 pub fn validate_args<T: Validatable>(args: &T) {
     if let Err(e) = args.validate() {
         eprintln!("Invalid input: {}", e);
@@ -49,16 +138,23 @@ pub fn validate_args<T: Validatable>(args: &T) {
     }
 }
 
+// Command-line interface definition for the `cipher` application.
 #[derive(Parser)]
 #[command(
     name = "cipher",
     version,
     about = "Simple and modern command line cryptography."
 )]
+/// The top-level command to execute.
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
 }
+
+/// Enum representing all supported subcommands for the `cipher` CLI.
+///
+/// Each variant corresponds to a specific operation, such as encryption,
+/// decryption, key management, or profile manipulation.
 #[derive(Subcommand)]
 pub enum Command {
     /// Encrypt a file with advanced options
@@ -92,6 +188,7 @@ pub enum Command {
     Verify(VerifyArgs),
 }
 
+// Handles encyption command
 #[derive(Args, Clone)]
 pub struct EncryptArgs {
     pub input: Option<String>,
@@ -120,31 +217,19 @@ pub struct EncryptArgs {
 
     #[arg(short = 'k', long = "key")]
     pub input_key: Option<String>,
-
-    // if you want the output copied to clipboard
-    #[arg(long = "to-clipboard", default_value_t = false)]
-    pub to_clipboard: bool,
-
-    // if you want the input pasted from clipboard
-    #[arg(long = "from-clipboard", default_value_t = false)]
-    pub from_clipboard: bool,
 }
 
 impl Validatable for EncryptArgs {
     fn validate(&self) -> Result<(), Box<dyn Error>> {
         match &self.input {
-            Some(path) => {
-                validate_path(path)?;
-            }
-            None => {
-                if !self.from_clipboard {
-                    return Err("No input file found.".into());
-                }
-            }
+            Some(path) => validate_path(path)?,
+            None => return Err("No input file found.".into()),
         }
+        // Ensures asym encryption must have a key
         if self.asym && !self.input_key.is_some() {
             return Err("Must provide key for asymmetric encryption.".into());
         }
+        // Does not need kdf and input key
         if self.input_key.is_some() && self.kdf.is_some() {
             return Err("Cannot provide both an input key and a KDF — choose one.".into());
         }
@@ -156,48 +241,29 @@ impl Validatable for EncryptArgs {
             Some(s) => valid_aead(s)?,
             None => {}
         }
-        if self.from_clipboard && self.input.is_some() {
-            return Err("Cannot have multiple sources of input.".into());
-        }
 
         Ok(())
     }
 }
 
+// Handles Decyption Command
 #[derive(Args)]
 pub struct DecryptArgs {
     pub input: Option<String>,
     pub output: Option<String>,
-
-    // if you want the output copied to clipboard
-    #[arg(long = "to-clipboard", default_value_t = false)]
-    pub to_clipboard: bool,
-
-    // if you want the input pasted from clipboard
-    #[arg(long = "from-clipboard", default_value_t = false)]
-    pub from_clipboard: bool,
 }
 
 impl Validatable for DecryptArgs {
     fn validate(&self) -> Result<(), Box<dyn Error>> {
         match &self.input {
-            Some(path) => {
-                validate_path(path)?;
-            }
-            None => {
-                if !self.from_clipboard {
-                    return Err("No input file found.".into());
-                }
-            }
+            Some(path) => validate_path(path)?,
+            None => return Err("No input file found.".into()),
         }
-        if self.from_clipboard && self.input.is_some() {
-            return Err("Cannot have multiple sources of input.".into());
-        }
-
         Ok(())
     }
 }
 
+// Handles commands to update profiles
 #[derive(Args)]
 pub struct ProfileArgs {
     #[arg(short = 'p', long = "profile")]
@@ -219,6 +285,7 @@ impl Validatable for ProfileArgs {
             None => get_new_profile(id.clone()),
         };
 
+        // Checks appropriate values for parameters
         match self.update_field.as_str() {
             "memory_cost" => {
                 let value = self
@@ -297,6 +364,7 @@ impl Validatable for ProfileArgs {
     }
 }
 
+// Handles commands to generate new keys
 #[derive(Args)]
 pub struct KeyGenArgs {
     pub id: String,
@@ -317,6 +385,7 @@ pub struct KeyGenArgs {
 
 impl Validatable for KeyGenArgs {
     fn validate(&self) -> Result<(), Box<dyn Error>> {
+        // Ensure there is a single key type
         match &self.asymmetric {
             Some(s) => {
                 if self.symmetric {
@@ -330,6 +399,7 @@ impl Validatable for KeyGenArgs {
                 }
             }
         }
+        // check that the number of bits is valid
         match self.bits {
             2048 | 3072 | 4096 => {}
             _ => {
@@ -340,6 +410,7 @@ impl Validatable for KeyGenArgs {
                 .into())
             }
         }
+        // If a profile is listed ensure it exists, otherwise make sure a default profile exists
         match get_profile(self.profile.as_str()) {
             Ok(Some(_profile)) => {}
             Ok(None) => {
@@ -357,6 +428,7 @@ impl Validatable for KeyGenArgs {
     }
 }
 
+// Allows for all profiles and keys to be wiped
 #[derive(Args)]
 pub struct WipeArgs {
     #[arg(short = 'k', long = "keys", default_value_t = false)]
@@ -365,11 +437,13 @@ pub struct WipeArgs {
     pub wipe_profiles: bool,
 }
 
+// Delete an individul key
 #[derive(Args)]
 pub struct DeleteKeyArgs {
     pub id: String,
 }
 
+// Handles commands to sign data
 #[derive(Args)]
 pub struct SignArgs {
     pub input: String,
@@ -383,6 +457,7 @@ impl Validatable for SignArgs {
     }
 }
 
+// Handles commands to verify data
 #[derive(Args)]
 pub struct VerifyArgs {
     pub input: String,

@@ -5,17 +5,26 @@ use typenum::Unsigned;
 
 use crate::constants::*;
 
-/// Base function for AEAD encryption and decryption.
+/// Performs authenticated encryption or decryption using the specified AEAD cipher.
 ///
-/// # Arguments
-/// * `key` - Encryption/decryption key as bytes.
-/// * `nonce` - Nonce as bytes.
-/// * `data` - Plaintext or ciphertext depending on mode.
-/// * `mode` - `true` for encryption, `false` for decryption.
+/// This function provides a generic interface over AEAD algorithms that implement
+/// the `Aead`, `KeyInit`, `AeadCore`, and `KeySizeUser` traits. It supports both
+/// encryption and decryption based on the `encrypt` flag.
+///
+/// # Parameters
+/// - `key`: The encryption key; must be the correct size for the AEAD cipher.
+/// - `nonce`: Optional nonce; required for encryption and must match the AEAD cipher's nonce size.
+/// - `data`: The input data to encrypt or decrypt.
+/// - `aad`: Optional associated data; used for authentication but not encrypted.
+/// - `encrypt`: A boolean flag indicating whether to encrypt (`true`) or decrypt (`false`).
 ///
 /// # Returns
-/// * `Ok(Vec<u8>)` with the result, or `Err(aead::Error)` if the operation fails.
-pub fn aead_base<C>(
+/// - `Ok(Vec<u8>)`: Encrypted ciphertext with prepended nonce (on encryption), or plaintext (on decryption).
+/// - `Err(AeadError)`: If encryption or decryption fails, or input sizes are invalid.
+///
+/// # Panics
+/// Panics if key or nonce sizes do not match the expected sizes for the cipher.
+fn aead_base<C>(
     key: &[u8],
     nonce: Option<&[u8]>,
     data: &[u8],
@@ -75,6 +84,24 @@ where
     }
 }
 
+/// Encrypts data using the specified AEAD algorithm identified by `alg_id`.
+///
+/// This function wraps `aead_base` to support algorithm selection via a numeric ID.
+/// It performs authenticated encryption using AES-GCM or ChaCha20-Poly1305 based on the input.
+///
+/// # Parameters
+/// - `alg_id`: Identifier for the AEAD algorithm (e.g., `AES_GCM_ID`, `CHA_CHA_20_POLY_1305_ID`).
+/// - `key`: Encryption key; must match the key size required by the chosen algorithm.
+/// - `nonce`: Nonce; must match the required nonce size (typically 12 bytes).
+/// - `data`: Plaintext data to encrypt.
+/// - `aad`: Optional associated data for authentication (not encrypted).
+///
+/// # Returns
+/// - `Ok(Vec<u8>)`: The resulting ciphertext with the nonce prepended (as handled in `aead_base`).
+/// - `Err(aead::Error)`: If encryption fails due to input validation or AEAD operation.
+///
+/// # Panics
+/// Panics if an unsupported algorithm ID is provided.
 pub fn id_encrypt(
     alg_id: u8,
     key: &[u8],
@@ -92,6 +119,23 @@ pub fn id_encrypt(
     }
 }
 
+/// Decrypts data using the specified AEAD algorithm identified by `alg_id`.
+///
+/// This function wraps `aead_base` to support algorithm selection via a numeric ID.
+/// It performs authenticated decryption using AES-GCM or ChaCha20-Poly1305 based on the input.
+///
+/// # Parameters
+/// - `alg_id`: Identifier for the AEAD algorithm (e.g., `AES_GCM_ID`, `CHA_CHA_20_POLY_1305_ID`).
+/// - `key`: Decryption key; must match the key size required by the chosen algorithm.
+/// - `data`: Ciphertext with the nonce prepended (as expected by `aead_base`).
+/// - `aad`: Optional associated data that was authenticated during encryption.
+///
+/// # Returns
+/// - `Ok(Vec<u8>)`: The decrypted plaintext if authentication and decryption succeed.
+/// - `Err(aead::Error)`: If decryption or authentication fails (e.g., due to tampering).
+///
+/// # Panics
+/// Panics if an unsupported algorithm ID is provided.
 pub fn id_decrypt(
     alg_id: u8,
     key: &[u8],
@@ -108,7 +152,7 @@ pub fn id_decrypt(
     }
 }
 
-// Tests
+// Tests for aeads
 #[cfg(test)]
 mod tests {
     use super::*;

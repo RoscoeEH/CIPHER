@@ -10,6 +10,7 @@ use std::error::Error;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+// Enables storage of profiles in the application
 fn get_db_path() -> PathBuf {
     let db_dir = if cfg!(debug_assertions) {
         // Dev path
@@ -25,7 +26,7 @@ fn get_db_path() -> PathBuf {
     db_dir
 }
 
-// Only initialize DB *after* we have the correct path
+// RocksDB database for storing profiles
 lazy_static! {
     static ref PROFILES_DB: Mutex<DB> = {
         let path = get_db_path();
@@ -33,7 +34,20 @@ lazy_static! {
     };
 }
 
-// The params should be a single hashmap instead of individual values or a struct for each alg
+/// Represents a cryptographic user profile with preferences for encryption and key derivation.
+///
+/// This struct stores user-specific configuration for encryption and KDF settings,
+/// allowing reusable and consistent cryptographic operations across the application.
+///
+/// # Fields
+/// - `id`: A unique identifier for the profile.
+/// - `aead_alg_id`: Identifier for the AEAD algorithm to use (e.g., AES-GCM, ChaCha20-Poly1305).
+/// - `kdf_id`: Identifier for the key derivation function (e.g., Argon2, PBKDF2).
+/// - `params`: A map of algorithm-specific parameters (e.g., memory, iterations, parallelism).
+///
+/// # Notes
+/// These profiles can be used to drive encryption/decryption and key derivation
+/// operations according to the user’s preferred settings.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct UserProfile {
     pub id: String,
@@ -42,6 +56,16 @@ pub struct UserProfile {
     pub params: HashMap<String, u32>,
 }
 
+/// Stores a `UserProfile` in the profiles database.
+///
+/// Serializes the provided profile and saves it to the key-value store under its `id`.
+/// This allows the profile to be retrieved later for cryptographic operations.
+///
+/// # Arguments
+/// - `profile`: A reference to the `UserProfile` to store.
+///
+/// # Errors
+/// Returns an error if serialization fails or if the database operation encounters an issue.
 pub fn set_profile(profile: &UserProfile) -> Result<(), Box<dyn std::error::Error>> {
     let db = PROFILES_DB.lock().unwrap();
 
@@ -50,6 +74,18 @@ pub fn set_profile(profile: &UserProfile) -> Result<(), Box<dyn std::error::Erro
     Ok(())
 }
 
+/// Retrieves a `UserProfile` by its ID from the profiles database.
+///
+/// Attempts to fetch and deserialize the profile associated with the given ID from the
+/// key-value store. If no profile is found, returns `Ok(None)`.
+///
+/// # Arguments
+/// - `id`: The ID of the profile to retrieve.
+///
+/// # Returns
+/// - `Ok(Some(UserProfile))` if the profile exists and is successfully deserialized.
+/// - `Ok(None)` if no profile is found with the given ID.
+/// - An error if the database read or deserialization fails.
 pub fn get_profile(id: &str) -> Result<Option<UserProfile>, Box<dyn std::error::Error>> {
     let db = PROFILES_DB.lock().unwrap();
 
@@ -61,6 +97,20 @@ pub fn get_profile(id: &str) -> Result<Option<UserProfile>, Box<dyn std::error::
     }
 }
 
+/// Initializes and returns the default `UserProfile`.
+///
+/// Checks if a profile with the ID `"Default"` exists in the profile store. If it does,
+/// the existing profile is returned. If not, a new default profile is created with
+/// sensible cryptographic defaults and stored in the database.
+///
+/// The default profile uses:
+/// - `CHA_CHA_20_POLY_1305_ID` for AEAD
+/// - `ARGON2_ID` for key derivation
+/// - Standard parameters for both Argon2 and PBKDF2 to ensure compatibility
+///
+/// # Returns
+/// - `Ok(UserProfile)` containing the default or newly created profile.
+/// - An error if reading or writing the profile fails.
 pub fn init_profile() -> Result<UserProfile, Box<dyn std::error::Error>> {
     let default_id = "Default";
 
@@ -88,6 +138,19 @@ pub fn init_profile() -> Result<UserProfile, Box<dyn std::error::Error>> {
     }
 }
 
+/// Creates a new `UserProfile` by cloning the default profile with a new ID.
+///
+/// Loads the default profile using `init_profile`, assigns it the provided `new_id`,
+/// and stores the new profile in the profile store.
+///
+/// # Arguments
+/// * `new_id` - The unique identifier for the new profile.
+///
+/// # Returns
+/// * `UserProfile` with the updated ID.
+///
+/// # Panics
+/// Panics if the default profile cannot be initialized or if storing the new profile fails.
 pub fn get_new_profile(new_id: String) -> UserProfile {
     let mut base_profile = init_profile().unwrap();
     base_profile.id = new_id;
@@ -95,6 +158,14 @@ pub fn get_new_profile(new_id: String) -> UserProfile {
     base_profile
 }
 
+/// Lists all stored user profiles from the profile database.
+///
+/// Iterates through all entries in the profile store, deserializes each `UserProfile`,
+/// and prints a summary including ID, AEAD algorithm, KDF, and key derivation parameters.
+///
+/// # Returns
+/// * `Ok(())` if listing succeeds.
+/// * `Err` if there is a database or deserialization error.
 pub fn list_profiles() -> Result<(), Box<dyn std::error::Error>> {
     let db = PROFILES_DB.lock().unwrap();
 
@@ -133,13 +204,19 @@ pub fn list_profiles() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Completely removes all stored user profiles from the profile database.
+///
+/// This function destroys the existing database at the profile storage path,
+/// removing all data. It then recreates an empty database to ensure
+/// the system remains in a usable state.
+///
+/// # Returns
+/// * `Ok(())` on successful wipe and reinitialization.
+/// * `Err` if there is an error destroying or reopening the database.
 pub fn wipe_profiles() -> Result<(), Box<dyn Error>> {
     let db_path = get_db_path();
 
-    // Remove everything under that path
     DB::destroy(&Options::default(), &db_path)?;
-
-    // Recreate an empty DB at the same location
     DB::open_default(&db_path)?;
 
     Ok(())

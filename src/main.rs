@@ -640,6 +640,7 @@ fn main() {
         }
 
         cli::Command::ListProfiles => {
+            user::init_profile().expect("Failed to set a default profile");
             user::list_profiles().expect("Failed to list profiles");
         }
 
@@ -685,15 +686,23 @@ fn main() {
         cli::Command::ListKeys => {
             key_storage::list_keys().expect("Failed to list keys");
         }
-        cli::Command::Wipe => {
-            print!("Are you sure you want to wipe all data? This action cannot be undone. [y/N]: ");
+        cli::Command::Wipe(mut args) => {
+            if !args.wipe_keys && !args.wipe_profiles {
+                args.wipe_keys = true;
+                args.wipe_profiles = true;
+            }
+            print!("This action cannot be undone. Are you sure you want to continue? [y/N]: ");
             io::stdout().flush().unwrap();
             let mut input = String::new();
             io::stdin().read_line(&mut input).unwrap();
 
             if input.trim().eq_ignore_ascii_case("y") {
-                user::wipe_profiles().unwrap();
-                key_storage::wipe_keystore().unwrap();
+                if args.wipe_profiles {
+                    user::wipe_profiles().unwrap();
+                }
+                if args.wipe_keys {
+                    key_storage::wipe_keystore().unwrap();
+                }
                 println!("All data wiped successfully.");
             } else {
                 println!("Wipe cancelled.");

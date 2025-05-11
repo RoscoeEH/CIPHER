@@ -81,8 +81,7 @@ pub enum Command {
     ListKeys,
 
     /// Clear all existing keys and profiles
-    #[clap(name = "wipe")]
-    Wipe,
+    Wipe(WipeArgs),
 
     /// Delete a singluar key
     #[clap(name = "delete-key")]
@@ -356,6 +355,14 @@ impl Validatable for KeyGenArgs {
 
         Ok(())
     }
+}
+
+#[derive(Args)]
+pub struct WipeArgs {
+    #[arg(short = 'k', long = "keys", default_value_t = false)]
+    pub wipe_keys: bool,
+    #[arg(short = 'p', long = "profiles", default_value_t = false)]
+    pub wipe_profiles: bool,
 }
 
 #[derive(Args)]

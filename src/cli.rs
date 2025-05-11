@@ -379,8 +379,6 @@ impl Validatable for SignArgs {
 #[derive(Args)]
 pub struct VerifyArgs {
     pub input: String,
-    #[arg(short = 'k', long = "key")]
-    pub key_id: String,
     #[arg(short = 'o', long = "only-verify", default_value_t = false)]
     pub only_verify: bool,
 }

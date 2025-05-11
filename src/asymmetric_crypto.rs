@@ -22,30 +22,37 @@ use rsa::{
     signature::{RandomizedSigner, SignatureEncoding},
     Pkcs1v15Encrypt, RsaPrivateKey, RsaPublicKey,
 };
+use secrecy::{ExposeSecret, Secret};
 use sha2::{Digest, Sha256};
 use std::error::Error;
+use zeroize::Zeroize;
 
 use crate::constants::*;
 use crate::random::*;
 use crate::symmetric_encryption::*;
 
 // RSA
-fn rsa_key_gen(bits: usize) -> (Vec<u8>, Vec<u8>) {
+fn rsa_key_gen(bits: usize) -> (Secret<Vec<u8>>, Vec<u8>) {
     let mut rng = thread_rng();
     let private_key = RsaPrivateKey::new(&mut rng, bits).expect("RSA key gen failed");
     let public_key = RsaPublicKey::from(&private_key);
-    (
-        private_key
-            .to_pkcs1_der()
-            .expect("Failed to encode private key")
-            .as_bytes()
-            .to_vec(),
+
+    let keypair = (
+        Secret::new(
+            private_key
+                .to_pkcs1_der()
+                .expect("Failed to encode private key")
+                .as_bytes()
+                .to_vec(),
+        ),
         public_key
             .to_pkcs1_der()
             .expect("Failed to encode public key")
             .as_bytes()
             .to_vec(),
-    )
+    );
+    drop(private_key);
+    keypair
 }
 
 fn rsa_enc(pub_key: &[u8], data: &[u8]) -> Vec<u8> {
@@ -89,7 +96,7 @@ fn rsa_verify(pub_key: &[u8], data: &[u8], signature: &[u8]) -> Result<(), rsa::
 
 // ECC
 
-fn ecc_key_gen() -> (Vec<u8>, Vec<u8>) {
+fn ecc_key_gen() -> (Secret<Vec<u8>>, Vec<u8>) {
     // Generate a secret key
     let secret = P256SecretKey::random(&mut OsRng);
 
@@ -97,10 +104,11 @@ fn ecc_key_gen() -> (Vec<u8>, Vec<u8>) {
     let public = P256PublicKey::from_secret_scalar(&secret.to_nonzero_scalar());
 
     // Serialize keys
-    let private_der = secret.to_pkcs8_der().unwrap().as_bytes().to_vec();
-    let public_bytes = public.to_encoded_point(false).as_bytes().to_vec(); // uncompressed
+    let private_key = Secret::new(secret.to_pkcs8_der().unwrap().as_bytes().to_vec());
+    let public_key = public.to_encoded_point(false).as_bytes().to_vec();
+    drop(secret);
 
-    (private_der, public_bytes)
+    (private_key, public_key)
 }
 
 fn ecc_enc(pub_key: &[u8], data: &[u8], sym_alg_id: u8) -> Result<Vec<u8>, Box<dyn Error>> {
@@ -111,20 +119,31 @@ fn ecc_enc(pub_key: &[u8], data: &[u8], sym_alg_id: u8) -> Result<Vec<u8>, Box<d
         P256PublicKey::from_encoded_point(&encoded_point).expect("Invalid encoded point for P256");
 
     // Ephemeral ECDH key exchange
-    let ephemeral = EphemeralSecret::random(&mut OsRng);
-    let shared_secret = ephemeral.diffie_hellman(&public_key);
+    let ephemeral = EphemeralSecret::random(&mut OsRng); // Zeroizes on drop
+    let shared_secret = ephemeral.diffie_hellman(&public_key); // Zeroizes on drop
 
-    // Derive symmetric key
-    let key_material = Sha256::digest(shared_secret.raw_secret_bytes());
-    let key = &key_material[..32];
+    // Derive symmetric key securely
+    let mut digest = Sha256::digest(shared_secret.raw_secret_bytes());
 
-    // Encrypt symmetric
+    // Convert the digest into a [u8; 32]
+    let mut key_bytes: [u8; 32] = digest
+        .as_slice()
+        .try_into()
+        .expect("Digest output is not 32 bytes");
+
+    let secret_key = Secret::new(key_bytes);
+    digest.zeroize();
+    key_bytes.zeroize();
+
+    // Encrypt data
     let nonce = get_nonce();
-    let ciphertext = id_encrypt(sym_alg_id, key, &nonce, data, None);
-    // Prepend ephemeral public key to ciphertext
+    let ciphertext = id_encrypt(sym_alg_id, secret_key.expose_secret(), &nonce, data, None);
+
+    // Prepend ephemeral public key
     let eph_pub = p256::PublicKey::from(&ephemeral);
     let mut result = eph_pub.to_encoded_point(false).as_bytes().to_vec();
     result.extend_from_slice(&ciphertext.unwrap());
+
     Ok(result)
 }
 
@@ -133,6 +152,9 @@ fn ecc_dec(
     ciphertext: &[u8],
     sym_alg_id: u8,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    use zeroize::Zeroize;
+
+    // Load private key
     let private_key = P256SecretKey::from_pkcs8_der(priv_key)
         .map_err(|e| format!("invalid private key: {}", e))?;
 
@@ -143,13 +165,30 @@ fn ecc_dec(
     let eph_pub = P256PublicKey::from_sec1_bytes(eph_pub_bytes)
         .map_err(|e| format!("invalid ephemeral pubkey: {}", e))?;
 
+    // Perform ECDH
     let shared_secret = diffie_hellman(private_key.to_nonzero_scalar(), eph_pub.as_affine());
 
-    let key_material = Sha256::digest(shared_secret.raw_secret_bytes());
-    let key = &key_material[..32];
+    // Derive symmetric key securely
+    let raw_secret = shared_secret.raw_secret_bytes();
+    let mut digest = Sha256::digest(&raw_secret);
 
-    id_decrypt(sym_alg_id, key, actual_ciphertext, None)
-        .map_err(|e| format!("decryption failed: {}", e).into())
+    let mut key_bytes: [u8; 32] = digest
+        .as_slice()
+        .try_into()
+        .expect("Digest output is not 32 bytes");
+
+    let secret_key = Secret::new(key_bytes);
+    digest.zeroize();
+    key_bytes.zeroize();
+
+    // Decrypt
+    id_decrypt(
+        sym_alg_id,
+        secret_key.expose_secret(),
+        actual_ciphertext,
+        None,
+    )
+    .map_err(|e| format!("decryption failed: {}", e).into())
 }
 
 fn ecdsa_sign(priv_key: &[u8], data: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
@@ -183,7 +222,7 @@ fn ecdsa_verify(pub_key: &[u8], data: &[u8], sig_bytes: &[u8]) -> Result<(), p25
 pub fn id_keypair_gen(
     alg_id: u8,
     bits: Option<usize>,
-) -> Result<(Vec<u8>, Vec<u8>), Box<dyn std::error::Error>> {
+) -> Result<(Secret<Vec<u8>>, Vec<u8>), Box<dyn std::error::Error>> {
     match alg_id {
         ECC_ID => Ok(ecc_key_gen()),
         RSA_ID => Ok(rsa_key_gen(bits.unwrap_or(4096))),
@@ -262,7 +301,7 @@ mod tests {
         let ciphertext = rsa_enc(&pub_key, plaintext);
 
         // Decrypt using private key
-        let decrypted = rsa_dec(&priv_key, &ciphertext);
+        let decrypted = rsa_dec(&priv_key.expose_secret(), &ciphertext);
 
         // Verify the output matches input
         assert_eq!(
@@ -276,7 +315,7 @@ mod tests {
         let (priv_key_der, pub_key_der) = rsa_key_gen(2048); // Should return (Vec<u8>, Vec<u8>)
 
         // Sign
-        let signature = rsa_sign(&priv_key_der, message);
+        let signature = rsa_sign(&priv_key_der.expose_secret(), message);
 
         // Verify
         let result = rsa_verify(&pub_key_der, message, &signature);
@@ -295,7 +334,8 @@ mod tests {
         let ciphertext = ecc_enc(&pub_key, plaintext, sym_alg_id).expect("ECC encryption failed");
 
         // Decrypt using private key
-        let decrypted = ecc_dec(&priv_key, &ciphertext, sym_alg_id).expect("ECC decryption failed");
+        let decrypted = ecc_dec(&priv_key.expose_secret(), &ciphertext, sym_alg_id)
+            .expect("ECC decryption failed");
 
         // Verify the output matches input
         assert_eq!(
@@ -309,7 +349,8 @@ mod tests {
         let (priv_key_der, pub_key_sec1) = ecc_key_gen(); // Should return (Vec<u8>, Vec<u8>)
 
         // Sign
-        let signature = ecdsa_sign(&priv_key_der, message).expect("ECDSA signing failed");
+        let signature =
+            ecdsa_sign(&priv_key_der.expose_secret(), message).expect("ECDSA signing failed");
 
         // Verify
         let result = ecdsa_verify(&pub_key_sec1, message, &signature);

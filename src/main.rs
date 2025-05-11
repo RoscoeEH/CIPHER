@@ -51,7 +51,7 @@ fn hash(data: &[u8]) -> Vec<u8> {
 
 pub struct DerivedKeyInfo {
     pub kdf_id: u8,
-    pub key: Vec<u8>,
+    pub key: Secret<Vec<u8>>,
     pub salt: Vec<u8>,
     pub params: HashMap<String, u32>,
 }
@@ -99,7 +99,7 @@ pub fn derive_key_from_stored(
         &sym_key.derivation_params,
     );
 
-    let derived_hash = Sha256::digest(&derived);
+    let derived_hash = Sha256::digest(&derived.expose_secret());
     if derived_hash[..] != sym_key.verification_hash[..] {
         return Err("Key verification failed".into());
     }
@@ -146,9 +146,9 @@ fn gen_asym_key(
         public_key: pub_key,
         private_key: symmetric_encryption::id_encrypt(
             profile.aead_alg_id,
-            &kek,
+            &kek.expose_secret(),
             &random::get_nonce(),
-            &priv_key,
+            &priv_key.expose_secret(),
             None,
         )
         .unwrap(),
@@ -180,7 +180,7 @@ fn gen_sym_key(
         salt: salt_vec,
         derivation_method_id: profile.kdf_id,
         derivation_params: params.clone(),
-        verification_hash: hash(&key),
+        verification_hash: hash(&key.expose_secret()),
         created: utils::now_as_u64(),
         use_count: 0,
     };
@@ -351,7 +351,7 @@ fn main() {
                     // === Encrypt with header as AAD
                     let ciphertext = symmetric_encryption::id_encrypt(
                         aead_id,
-                        key_ref,
+                        key_ref.expose_secret(),
                         &nonce,
                         &plaintext,
                         Some(&header),
@@ -460,7 +460,7 @@ fn main() {
 
                     let plaintext_with_filename = symmetric_encryption::id_decrypt(
                         aead_id,
-                        &key,
+                        &key.expose_secret(),
                         &ciphertext,
                         Some(&aad), // <- pass AAD
                     )
@@ -540,18 +540,20 @@ fn main() {
                     );
 
                     // === Decrypt the stored private key ===
-                    let decrypted_priv_key = symmetric_encryption::id_decrypt(
-                        keypair.kek_aead,
-                        &kek,
-                        &keypair.private_key,
-                        None,
-                    )
-                    .expect("Failed to decrypt private key");
+                    let decrypted_priv_key = Secret::new(
+                        symmetric_encryption::id_decrypt(
+                            keypair.kek_aead,
+                            &kek.expose_secret(),
+                            &keypair.private_key,
+                            None,
+                        )
+                        .expect("Failed to decrypt private key"),
+                    );
 
                     // === Proceed with asymmetric decryption ===
                     let plaintext_with_filename = asymmetric_crypto::id_asym_dec(
                         alg_id,
-                        &decrypted_priv_key,
+                        &decrypted_priv_key.expose_secret(),
                         &ciphertext,
                         Some(sym_alg_id),
                     )
@@ -741,13 +743,15 @@ fn main() {
                 SYM_KEY_LEN,
                 &keypair.kek_params,
             );
-            let decrypted_priv = symmetric_encryption::id_decrypt(
-                keypair.kek_aead,
-                &kek,
-                &keypair.private_key,
-                None,
-            )
-            .unwrap();
+            let decrypted_priv = Secret::new(
+                symmetric_encryption::id_decrypt(
+                    keypair.kek_aead,
+                    &kek.expose_secret(),
+                    &keypair.private_key,
+                    None,
+                )
+                .unwrap(),
+            );
 
             let alg_id = keypair.key_type;
             let key_id_bytes = args.key_id.as_bytes();
@@ -767,8 +771,9 @@ fn main() {
             let mut signed_blob = header.clone();
             signed_blob.extend_from_slice(&data);
             let data_hash = hash(&signed_blob);
-            let signature = asymmetric_crypto::id_sign(alg_id, &decrypted_priv, &data_hash)
-                .expect("Signing failed");
+            let signature =
+                asymmetric_crypto::id_sign(alg_id, &decrypted_priv.expose_secret(), &data_hash)
+                    .expect("Signing failed");
 
             // === Write out: header, data, then signature ===
             let sig_path = input_path.with_extension("sig");

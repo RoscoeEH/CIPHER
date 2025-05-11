@@ -236,3 +236,7 @@ Build production executable with:
 ```sh
 cargo build --release
 ```
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).

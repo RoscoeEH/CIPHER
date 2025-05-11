@@ -142,9 +142,5 @@ pub fn wipe_profiles() -> Result<(), Box<dyn Error>> {
     // Recreate an empty DB at the same location
     DB::open_default(&db_path)?;
 
-    println!(
-        "Profiles database wiped and reinitialized at {}",
-        db_path.display()
-    );
     Ok(())
 }

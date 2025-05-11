@@ -691,7 +691,19 @@ fn main() {
                 args.wipe_keys = true;
                 args.wipe_profiles = true;
             }
-            print!("This action cannot be undone. Are you sure you want to continue? [y/N]: ");
+            if args.wipe_keys && args.wipe_profiles {
+                print!(
+                    "Are you sure you want to wipe all data? This action cannot be undone. [y/N]: "
+                );
+            } else if args.wipe_keys {
+                print!(
+                    "Are you sure you want to wipe all keys? This action cannot be undone. [y/N]: "
+                );
+            } else {
+                print!(
+                    "Are you sure you want to wipe all profiles? This action cannot be undone. [y/N]: "
+                );
+            }
             io::stdout().flush().unwrap();
             let mut input = String::new();
             io::stdin().read_line(&mut input).unwrap();
@@ -703,7 +715,7 @@ fn main() {
                 if args.wipe_keys {
                     key_storage::wipe_keystore().unwrap();
                 }
-                println!("All data wiped successfully.");
+                println!("Wipe successfull.");
             } else {
                 println!("Wipe cancelled.");
             }

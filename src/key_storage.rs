@@ -211,7 +211,6 @@ pub fn wipe_keystore() -> Result<(), Box<dyn Error>> {
     // Recreate the database to ensure it exists for future use
     DB::open_default(&keystore_path)?;
 
-    println!("Keystore database wiped and reinitialized.");
     Ok(())
 }
 

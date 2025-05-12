@@ -10,7 +10,7 @@ Cipher securely encapsulates all necessary cryptographic material—including ci
 - 🧪 **Known Answer Tests (KATs)** for symmetric encryption schemes
 - 🔑 **Password-based Key Derivation** with **Argon2** and **PBKDF2**
 - 📦 **User Profiles** for storing cryptographic preferences (KDF parameters, AEAD choice)
-- 🔁 **Asymmetric Encryption Support** for **RSA** and **ECC**, including:
+- 🔁 **Asymmetric Encryption Support** for **RSA**, **ECC**, **Kyber**, and **Dilithium** including:
   - Key generation
   - Encryption/decryption
   - Signing and verification

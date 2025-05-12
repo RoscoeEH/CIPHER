@@ -41,6 +41,9 @@ This project makes use of the following Rust crates:
 - [rsa](https://crates.io/crates/rsa) — RSA encryption, signing, and keypair generation
 - [p256](https://crates.io/crates/p256) — NIST P-256 curve for ECC key exchange and signing
 - [elliptic-curve](https://crates.io/crates/elliptic-curve) — ECC trait definitions and encoding support
+- [pqcrypto-kyber](https://crates.io/crates/pqcrypto-kyber) — Post-quantum Kyber encryption (Kyber512)
+- [pqcrypto-dilithium](https://crates.io/crates/pqcrypto-dilithium) — Post-quantum Dilithium digital signatures (Dilithium2)
+- [pqcrypto-traits](https://crates.io/crates/pqcrypto-traits) — Common trait interfaces for post-quantum schemes
 - [secrecy](https://crates.io/crates/secrecy) — Secret type wrappers for zeroization and memory safety
 - [zeroize](https://crates.io/crates/zeroize) — Secure memory zeroing for sensitive data
 - [serde](https://crates.io/crates/serde) — Serialization framework with `derive` support

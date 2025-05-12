@@ -34,6 +34,8 @@ pub fn alg_name_to_id(name: &str) -> Result<u8, Box<dyn Error>> {
         "ecc" => Ok(ECC_ID),
         "argon2" => Ok(ARGON2_ID),
         "pbkdf2" => Ok(PBKDF2_ID),
+        "kyber" => Ok(KYBER_ID),
+        "dilithium" => Ok(DILITHIUM_ID),
         _ => Err(format!("Unknown algorithm name: {}", name).into()),
     }
 }
@@ -56,6 +58,8 @@ pub fn alg_id_to_name(id: u8) -> &'static str {
         ECC_ID => "ecc",
         ARGON2_ID => "argon2",
         PBKDF2_ID => "pbkdf2",
+        KYBER_ID => "kyber",
+        DILITHIUM_ID => "dilithium",
         _ => "unknown",
     }
 }

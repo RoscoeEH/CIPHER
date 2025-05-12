@@ -16,6 +16,9 @@ typenum = "1.17"
 rsa  = { version = "0.9", features = ["sha2"] }
 p256 = { version = "0.13", features = ["ecdh", "pkcs8", "pem", "arithmetic"] }
 elliptic-curve = { version = "0.13", features = ["sec1", "pkcs8"] }
+pqcrypto-kyber = "0.7"
+pqcrypto-dilithium = "0.5"
+pqcrypto-traits = "0.3"
 zeroize = "1.4"
 secrecy = "0.8"
 rpassword = "7.3"

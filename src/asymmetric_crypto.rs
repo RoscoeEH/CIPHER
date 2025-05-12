@@ -15,7 +15,6 @@ use elliptic_curve::{
     pkcs8::{DecodePrivateKey, EncodePrivateKey},
     sec1::{EncodedPoint, FromEncodedPoint, ToEncodedPoint},
 };
-
 use p256::{
     ecdh::{diffie_hellman, EphemeralSecret},
     ecdsa::{
@@ -25,6 +24,7 @@ use p256::{
     },
     PublicKey as P256PublicKey, SecretKey as P256SecretKey,
 };
+
 use rand::thread_rng;
 use rand_core::OsRng;
 use rsa::{
@@ -35,6 +35,15 @@ use rsa::{
     signature::{RandomizedSigner, SignatureEncoding},
     Pkcs1v15Encrypt, RsaPrivateKey, RsaPublicKey,
 };
+
+use pqcrypto_dilithium::dilithium2;
+use pqcrypto_kyber::kyber512;
+use pqcrypto_traits::kem::{Ciphertext as _, PublicKey as _, SecretKey as _, SharedSecret as _};
+use pqcrypto_traits::sign::{
+    PublicKey as DilithiumPublicKeyTrait, SecretKey as DilithiumSecretKeyTrait,
+    SignedMessage as DilithiumSignedMessageTrait,
+};
+
 use secrecy::{ExposeSecret, Secret};
 use sha2::{Digest, Sha256};
 use std::error::Error;
@@ -434,10 +443,243 @@ fn ecdsa_verify(pub_key: &[u8], data: &[u8], sig_bytes: &[u8]) -> Result<(), p25
     verifying_key.verify(data, &signature)
 }
 
+// === kyber ===
+
+/// Generates a new Kyber512 public/private keypair.
+///
+/// # Returns
+///
+/// Returns a `Result` containing a tuple:
+/// - `Secret<Vec<u8>>`: The private key wrapped in a `Secret` for secure memory handling.
+/// - `Vec<u8>`: The public key as raw bytes.
+///
+/// # Errors
+///
+/// Returns an error if key generation fails (though `kyber512::keypair()` is infallible in this case).
+fn kyber_key_gen() -> Result<(Secret<Vec<u8>>, Vec<u8>), Box<dyn Error>> {
+    let (public_key, secret_key) = kyber512::keypair();
+
+    let secret_key_bytes = Secret::new(secret_key.as_bytes().to_vec());
+    let public_key_bytes = public_key.as_bytes().to_vec();
+
+    Ok((secret_key_bytes, public_key_bytes))
+}
+
+/// Encrypts data using Kyber512 for key encapsulation and a symmetric cipher for payload encryption.
+///
+/// This function performs hybrid encryption by encapsulating a shared secret using the recipient's
+/// Kyber512 public key, then deriving a 256-bit AES key from that secret using SHA-256. The actual data
+/// is encrypted using the specified symmetric AEAD algorithm.
+///
+/// # Arguments
+///
+/// - `pub_key`: A byte slice containing the recipient's Kyber512 public key.
+/// - `data`: The plaintext data to encrypt.
+/// - `sym_alg_id`: The ID of the symmetric AEAD algorithm to use for encrypting the data.
+///
+/// # Returns
+///
+/// A `Result` containing the ciphertext, which includes:
+/// - The Kyber encapsulation ciphertext (for deriving the shared secret on the recipient side).
+/// - The AEAD-encrypted payload appended to it.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The public key is invalid or fails to deserialize.
+/// - Symmetric encryption fails.
+fn kyber_enc(pub_key: &[u8], data: &[u8], sym_alg_id: u8) -> Result<Vec<u8>, Box<dyn Error>> {
+    // Load the recipient's public key
+    let public_key = kyber512::PublicKey::from_bytes(pub_key)?;
+
+    // Encapsulate to get the ciphertext and shared secret
+    let (shared_secret, ciphertext) = kyber512::encapsulate(&public_key);
+
+    // Hash the shared secret to derive symmetric key
+    let mut digest = Sha256::digest(shared_secret.as_bytes());
+
+    let mut key_bytes: [u8; 32] = digest
+        .as_slice()
+        .try_into()
+        .expect("Digest output is not 32 bytes");
+
+    let secret_key = Secret::new(key_bytes);
+    digest.zeroize();
+    key_bytes.zeroize();
+
+    // Encrypt the payload with symmetric encryption
+    let nonce = get_nonce();
+    let ciphertext_payload =
+        id_encrypt(sym_alg_id, secret_key.expose_secret(), &nonce, data, None).unwrap();
+
+    // Output: Kyber ciphertext || encrypted payload
+    let mut result = ciphertext.as_bytes().to_vec();
+    result.extend_from_slice(&ciphertext_payload);
+
+    Ok(result)
+}
+
+/// Decrypts data encrypted with Kyber512 hybrid encryption.
+///
+/// This function expects input that was encrypted using the `kyber_enc` function. It extracts the
+/// Kyber ciphertext to recover the shared secret, derives a symmetric key using SHA-256, and
+/// decrypts the AEAD-encrypted payload with the specified symmetric algorithm.
+///
+/// # Arguments
+///
+/// - `private_key_bytes`: A byte slice containing the Kyber512 private key used for decapsulation.
+/// - `ciphertext`: The full ciphertext, consisting of the Kyber encapsulation followed by the encrypted payload.
+/// - `sym_alg_id`: The ID of the symmetric AEAD algorithm used for the payload.
+///
+/// # Returns
+///
+/// A `Result` containing the decrypted plaintext.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The ciphertext is malformed or too short.
+/// - Decapsulation or symmetric decryption fails.
+/// - The private key or ciphertext cannot be deserialized.
+fn kyber_dec(
+    private_key_bytes: &[u8],
+    ciphertext: &[u8],
+    sym_alg_id: u8,
+) -> Result<Vec<u8>, Box<dyn Error>> {
+    let secret_key = kyber512::SecretKey::from_bytes(private_key_bytes)?;
+
+    // Split out the Kyber ciphertext
+    let kyber_ciphertext_len = kyber512::ciphertext_bytes();
+    if ciphertext.len() < kyber_ciphertext_len {
+        return Err("ciphertext too short".into());
+    }
+
+    let encapsulated_bytes = &ciphertext[..kyber_ciphertext_len];
+    let encrypted_payload = &ciphertext[kyber_ciphertext_len..];
+
+    // Load ciphertext and decapsulate
+    let encapsulated = kyber512::Ciphertext::from_bytes(encapsulated_bytes)?;
+    let shared_secret = kyber512::decapsulate(&encapsulated, &secret_key);
+
+    // Derive symmetric key
+    let mut digest = Sha256::digest(shared_secret.as_bytes());
+
+    let mut key_bytes: [u8; 32] = digest
+        .as_slice()
+        .try_into()
+        .expect("Digest output is not 32 bytes");
+
+    let secret_key = Secret::new(key_bytes);
+    digest.zeroize();
+    key_bytes.zeroize();
+
+    // Decrypt the symmetric ciphertext
+    id_decrypt(
+        sym_alg_id,
+        secret_key.expose_secret(),
+        encrypted_payload,
+        None,
+    )
+    .map_err(|e| format!("decryption failed: {}", e).into())
+}
+
+// === dilithium ===
+
+/// Generates a Dilithium2 public-private key pair for post-quantum digital signatures.
+///
+/// This function creates a new keypair using the Dilithium2 algorithm and returns the private key
+/// securely wrapped in a [`Secret`] and the public key as a byte vector.
+///
+/// # Returns
+///
+/// A `Result` containing a tuple with:
+/// - A `Secret<Vec<u8>>` holding the private key bytes.
+/// - A `Vec<u8>` with the public key bytes.
+///
+/// # Errors
+///
+/// Returns an error if key generation fails, though this is unlikely under normal conditions.
+fn dilithium_key_gen() -> Result<(Secret<Vec<u8>>, Vec<u8>), Box<dyn std::error::Error>> {
+    let (public_key_struct, secret_key_struct) = dilithium2::keypair();
+
+    let private_key_bytes = secret_key_struct.as_bytes().to_vec();
+    let public_key_bytes = public_key_struct.as_bytes().to_vec();
+
+    Ok((Secret::new(private_key_bytes), public_key_bytes))
+}
+
+/// Signs a message using a Dilithium2 private key.
+///
+/// This function uses the provided Dilithium2 private key bytes to sign the input message,
+/// returning the detached signature as a byte vector.
+///
+/// # Arguments
+///
+/// * `message` - The message to be signed.
+/// * `private_key_bytes` - Byte slice containing the Dilithium2 private key.
+///
+/// # Returns
+///
+/// A `Result` containing the signature as a `Vec<u8>`, or an error if signing fails.
+///
+/// # Errors
+///
+/// Returns an error if the private key is invalid or signing fails.
+pub fn dilithium_sign(
+    message: &[u8],
+    private_key_bytes: &[u8],
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let secret_key = dilithium2::SecretKey::from_bytes(private_key_bytes)?;
+    let signed_message = dilithium2::sign(message, &secret_key);
+
+    // Extract the signature portion
+    let signature_len = signed_message.as_bytes().len() - message.len();
+    let signature = &signed_message.as_bytes()[..signature_len];
+
+    Ok(signature.to_vec())
+}
+
+/// Verifies a Dilithium2 signature for a given message and public key.
+///
+/// This function reconstructs a signed message from the provided detached signature and message,
+/// and verifies it using the given Dilithium2 public key.
+///
+/// # Arguments
+///
+/// * `public_key_bytes` - Byte slice containing the Dilithium2 public key.
+/// * `message` - The original message that was signed.
+/// * `signature` - The detached signature to verify.
+///
+/// # Returns
+///
+/// Returns `Ok(())` if the signature is valid, or an error if verification fails.
+///
+/// # Errors
+///
+/// Returns an error if the public key, signature, or verification fails.
+pub fn dilithium_verify(
+    public_key_bytes: &[u8],
+    message: &[u8],
+    signature: &[u8],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let public_key = dilithium2::PublicKey::from_bytes(public_key_bytes)?;
+
+    // Reconstruct a `SignedMessage` by prepending the signature to the message
+    let mut signed_data = signature.to_vec();
+    signed_data.extend_from_slice(message);
+
+    let signed_message = dilithium2::SignedMessage::from_bytes(&signed_data)?;
+    let _ = dilithium2::open(&signed_message, &public_key)?; // discard message
+
+    Ok(())
+}
+
+// === id based functions ===
+
 /// Generates a public/private keypair for a specified asymmetric algorithm.
 ///
 /// Depending on the provided algorithm ID, this function delegates to the appropriate
-/// key generation routine (e.g., RSA or ECC). RSA key length can be customized via `bits`.
+/// key generation routine (e.g., RSA, ECC, etc...). RSA key length can be customized via `bits`.
 ///
 /// # Arguments
 ///
@@ -461,6 +703,8 @@ pub fn id_keypair_gen(
     match alg_id {
         ECC_ID => Ok(ecc_key_gen()),
         RSA_ID => Ok(rsa_key_gen(bits.unwrap_or(4096))),
+        KYBER_ID => kyber_key_gen(),
+        DILITHIUM_ID => dilithium_key_gen(),
         _ => Err(format!("Unrecognized asymmetric key type: {}", alg_id).into()),
     }
 }
@@ -469,7 +713,8 @@ pub fn id_keypair_gen(
 ///
 /// This function routes encryption to the appropriate implementation based on the
 /// provided algorithm ID. ECC encryption uses hybrid encryption (ECDH + symmetric),
-/// requiring an additional symmetric algorithm ID. RSA encryption uses direct encryption.
+/// requiring an additional symmetric algorithm ID; Kyber works similarly.
+/// RSA encryption uses direct encryption.
 ///
 /// # Arguments
 ///
@@ -486,6 +731,7 @@ pub fn id_keypair_gen(
 /// # Notes
 ///
 /// - For ECC, a symmetric key is derived via ECDH and used to encrypt `data` using the specified symmetric algorithm.
+/// - For Kyber, a symetric key is generated and used to encrypt the data.
 /// - For RSA, data is encrypted directly with the public key using PKCS#1 v1.5 padding.
 ///
 /// # Errors
@@ -505,6 +751,11 @@ pub fn id_asym_enc(
             ecc_enc(pub_key, data, sym_alg_id)
         }
         RSA_ID => Ok(rsa_enc(pub_key, data)),
+        KYBER_ID => {
+            let sym_alg_id =
+                sym_alg_id.ok_or("Missing symmetric algorithm ID for Kyber encryption")?;
+            kyber_enc(pub_key, data, sym_alg_id)
+        }
         _ => Err(format!("Unrecognized asymmetric key type: {}", alg_id).into()),
     }
 }
@@ -513,7 +764,7 @@ pub fn id_asym_enc(
 ///
 /// This function dispatches decryption logic based on the provided algorithm ID.
 /// ECC decryption involves ECDH key agreement and symmetric decryption, requiring
-/// an additional symmetric algorithm ID. RSA decryption uses PKCS#1 v1.5.
+/// an additional symmetric algorithm ID; Kyber works similarly. RSA decryption uses PKCS#1 v1.5.
 ///
 /// # Arguments
 ///
@@ -549,13 +800,19 @@ pub fn id_asym_dec(
             ecc_dec(priv_key, ciphertext, sym_alg_id)
         }
         RSA_ID => Ok(rsa_dec(priv_key, ciphertext)),
+        KYBER_ID => {
+            let sym_alg_id =
+                sym_alg_id.ok_or("Missing symmetric algorithm ID for Kyber decryption")?;
+            kyber_dec(priv_key, ciphertext, sym_alg_id)
+        }
+
         _ => Err(format!("Unrecognized asymmetric key type: {}", alg_id).into()),
     }
 }
 
 /// Signs data using the specified asymmetric signature algorithm and private key.
 ///
-/// This function delegates to the appropriate signing implementation (RSA or ECDSA)
+/// This function delegates to the appropriate signing implementation (RSA, ECDSA, or Dilithium2)
 /// based on the provided algorithm ID.
 ///
 /// # Arguments
@@ -573,10 +830,12 @@ pub fn id_asym_dec(
 ///
 /// - RSA signatures are typically PKCS#1 v1.5 with SHA-256.
 /// - ECC signatures use ECDSA over the NIST P-256 curve with deterministic nonce (RFC 6979).
+/// - Dilithium signatures use Dilithium2, a post-quantum digital signature scheme (CRYSTALS).
 pub fn id_sign(alg_id: u8, priv_key: &[u8], data: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
     match alg_id {
         RSA_ID => Ok(rsa_sign(priv_key, data)),
         ECC_ID => ecdsa_sign(priv_key, data),
+        DILITHIUM_ID => dilithium_sign(data, priv_key),
         _ => Err(format!("Unsupported signature algorithm ID: {}", alg_id).into()),
     }
 }
@@ -602,6 +861,7 @@ pub fn id_sign(alg_id: u8, priv_key: &[u8], data: &[u8]) -> Result<Vec<u8>, Box<
 ///
 /// - RSA verification uses PKCS#1 v1.5 padding and SHA-256.
 /// - ECC verification uses ECDSA with SHA-256 over the NIST P-256 curve.
+/// - Dilithium verification uses Dilithium2, a post-quantum signature scheme from CRYSTALS.
 /// - This function panics if the provided key formats are invalid.
 pub fn id_verify(
     alg_id: u8,
@@ -612,6 +872,7 @@ pub fn id_verify(
     match alg_id {
         RSA_ID => rsa_verify(pub_key, data, signature).map_err(|e| e.into()),
         ECC_ID => ecdsa_verify(pub_key, data, signature).map_err(|e| e.into()),
+        DILITHIUM_ID => dilithium_verify(pub_key, data, signature),
         _ => Err(format!("Unsupported signature algorithm ID: {}", alg_id).into()),
     }
 }
@@ -688,5 +949,44 @@ mod tests {
         // Verify
         let result = ecdsa_verify(&pub_key_sec1, message, &signature);
         assert!(result.is_ok(), "ECDSA signature verification failed");
+    }
+    #[test]
+    fn test_kyber_enc_dec_kat() {
+        let plaintext = b"Test vector: Kyber encryption works!";
+        let sym_alg_id = AES_GCM_ID; //
+
+        // Generate Kyber keypair
+        let (secret_key_bytes, public_key_bytes) = kyber_key_gen().expect("Keypair gen failed");
+
+        // Encrypt using Kyber-based ECIES
+        let ciphertext =
+            kyber_enc(&public_key_bytes, plaintext, sym_alg_id).expect("Kyber encryption failed");
+
+        // Decrypt using Kyber-based ECIES
+        let decrypted = kyber_dec(&secret_key_bytes.expose_secret(), &ciphertext, sym_alg_id)
+            .expect("Kyber decryption failed");
+
+        // Validate that the decrypted text matches the original
+        assert_eq!(
+            decrypted, plaintext,
+            "Kyber decrypted data does not match original"
+        );
+    }
+    #[test]
+    fn test_dilithium_sign_verify_kat() {
+        let message = b"Test vector: Dilithium signing works!";
+
+        // Generate Dilithium keypair
+        let (secret_key_bytes, public_key_bytes) =
+            dilithium_key_gen().expect("Keypair generation failed");
+
+        // Sign the message
+        let signature =
+            dilithium_sign(message, &secret_key_bytes.expose_secret()).expect("Signing failed");
+
+        // Verify the signature
+        let result = dilithium_verify(&public_key_bytes, message, &signature);
+
+        assert!(result.is_ok(), "Dilithium signature verification failed");
     }
 }

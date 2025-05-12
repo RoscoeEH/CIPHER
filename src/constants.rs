@@ -20,7 +20,9 @@ pub const AEAD_NAMES: [&str; 2] = ["aes-gcm", "chacha20poly1305"];
 // Asymmetric
 pub const RSA_ID: u8 = 8;
 pub const ECC_ID: u8 = 9;
-pub const ASYM_NAMES: [&str; 2] = ["rsa", "ecc"];
+pub const KYBER_ID: u8 = 10;
+pub const DILITHIUM_ID: u8 = 11;
+pub const ASYM_NAMES: [&str; 4] = ["rsa", "ecc", "kyber", "dilithium"];
 
 // KDF
 pub const ARGON2_ID: u8 = 16;

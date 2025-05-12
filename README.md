@@ -1,6 +1,6 @@
 # CIPHER: Command-line Interface for Protection, Hardening, and Endpoint Reinforcement
 
-**Cipher** is a flexible, extensible command-line application for encrypting and decrypting files using modern cryptographic standards. It supports both symmetric and asymmetric encryption schemes, configurable password-based key derivation functions (KDFs), and profile-based parameter management.
+**Cipher** is a flexible, extensible command-line application for encrypting and decrypting files using modern cryptographic standards, including support for **post-quantum algorithms**. It supports both symmetric and asymmetric encryption schemes, configurable password-based key derivation functions (KDFs), and profile-based parameter management.
 
 Cipher securely encapsulates all necessary cryptographic material—including ciphertext, salt, nonces, and algorithm identifiers—into a single `.enc` or `.sig` file for reliable and portable decryption and verification. Key generation, storage, and verification are handled via RocksDB and Serde, with user-defined profiles simplifying cryptographic parameter reuse.
 
@@ -123,7 +123,7 @@ Does not require any inputs.
 |-----------------------|-----------|----------------------------------------------------------------------------|
 | `id`                  | `String`  | Unique identifier for the key *(required)*                                 |
 | `--symmetric`, `-s`   | `bool`    | Generate a symmetric key                                                   |
-| `--asymmetric-alg`, `-a` | `String`  | Generate an asymmetric key pair (`rsa`, `ecc`) *(mutually exclusive with symmetric)* |
+| `--asymmetric-alg`, `-a` | `String`  | Generate an asymmetric key pair (`rsa`, `ecc`, `kyber`, `dilithium`) *(mutually exclusive with symmetric)* |
 | `--bits`, `-b`        | `usize`   | RSA key size in bits (`2048`, `3072`, `4096`) *(RSA only)*                 |
 | `--profile`, `-p`     | `String`  | Associated profile ID *(defaults to `Default`)*                            |
 
@@ -215,12 +215,28 @@ The signature is generated over the **header and file content**, hashed and sign
 
 ## Security Notes
 
-- Uses **Argon2id** or **PBKDF2** for password-based key derivation (configurable parameters, 16-byte salt, 32-byte derived key).
-- Symmetric encryption uses **AES-256-GCM** or **ChaCha20Poly1305** with a 12-byte nonce and AEAD for integrity and confidentiality.
-- Asymmetric encryption wraps a symmetric key using a public key (e.g., **X25519**, **RSA**) and includes only the **key ID**, not the public key itself, in the `.enc` file.
-- Digital signatures use asymmetric keys (e.g., **Ed25519**, **RSA-PSS**) and sign both file metadata and contents.
+- Uses for password-based key derivation configurable parameters, 16-byte salt, 32-byte derived key.
+- Symmetric encryption with a 12-byte nonce and AEAD for integrity and confidentiality.
+- Asymmetric encryption wraps a symmetric key using a public key and includes only the key ID, not the public key itself, in the `.enc` file.
+- Digital signatures use asymmetric keys and sign both file metadata and contents.
 - Passwords and decrypted key material are **zeroized from memory** after use.
 
+### Full List of Supported Algorithms
+
+- **Key Derivation**
+  - Argon2id
+  - PBKDF2-HMAC-SHA256
+- **Authenticated Symmetric Encryption and Decryption**
+  - AES-256-GCM
+  - CHACHA20-POLY1305
+- **Asymmetric Encryption and Decryption**
+  - X25519 (ECIES-style hybrid encryption)
+  - RSA PKCS1v1.5
+  - Kyber512 (Post-quantum KEM, hybrid encryption)
+- **Asymmetric Signing and Verifying**
+  - ECDSA-P256 (SHA256)
+  - RSA PKCS1v1.5
+  - Dilithium2 (Post-quantum signature scheme)  
 ### File Storage Details
 
 - `.enc` files:

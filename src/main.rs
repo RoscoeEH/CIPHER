@@ -351,6 +351,160 @@ fn read_file(path: &str) -> Result<Vec<u8>, Box<dyn Error>> {
     Ok(contents)
 }
 
+fn warn_user_or_exit(message: &str) {
+    print!("{} [y/N]: ", message);
+    io::stdout().flush().unwrap();
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).unwrap();
+
+    if !input.trim().eq_ignore_ascii_case("y") {
+        println!("Cancelled");
+        exit(0);
+    }
+}
+
+// Helpful to get either an owned or unowned key
+enum PublicKeyEntry {
+    Unowned(key_storage::UnownedPublicKey),
+    Owned(key_storage::AsymKeyPair),
+}
+impl PublicKeyEntry {
+    pub fn id(&self) -> String {
+        match self {
+            PublicKeyEntry::Unowned(k) => k.internal_id.clone(),
+            PublicKeyEntry::Owned(k) => k.id.clone(),
+        }
+    }
+
+    pub fn key_type(&self) -> u8 {
+        match self {
+            PublicKeyEntry::Unowned(k) => k.key_type,
+            PublicKeyEntry::Owned(k) => k.key_type,
+        }
+    }
+    pub fn public_key(&self) -> Vec<u8> {
+        match self {
+            PublicKeyEntry::Unowned(k) => k.public_key.clone(),
+            PublicKeyEntry::Owned(k) => k.public_key.clone(),
+        }
+    }
+}
+
+fn get_unowned_or_owned_public_key(key_id: &str) -> Result<PublicKeyEntry, Box<dyn Error>> {
+    let public_key = key_storage::get_unowned_public_key(&key_id)
+        .expect("Failed to check for unowned public key.");
+
+    let key_entry = match public_key {
+        Some(k) => PublicKeyEntry::Unowned(k),
+        None => {
+            warn_user_or_exit(&format!(
+                "Could not find unowned public key with ID: {}. Would you like to try an owned key?",
+                key_id
+            ));
+            let keypair = key_storage::get_key::<key_storage::AsymKeyPair>(&key_id)?
+                .ok_or("Key ID not found")?;
+            PublicKeyEntry::Owned(keypair)
+        }
+    };
+
+    Ok(key_entry)
+}
+
+pub fn build_signed_blob(
+    magic: &'static [u8; 4],
+    alg_id: u8,
+    key_id: &str,
+    filename: &str,
+    data: &[u8],
+    decrypted_priv: &secrecy::Secret<Vec<u8>>,
+) -> Result<Vec<u8>, Box<dyn Error>> {
+    let key_id_bytes = key_id.as_bytes();
+    let filename_bytes = filename.as_bytes();
+
+    // Build header
+    let mut header = Vec::new();
+    header.extend_from_slice(magic);
+    header.push(alg_id);
+    header.push(key_id_bytes.len() as u8);
+    header.extend_from_slice(key_id_bytes);
+    header.extend_from_slice(&(filename_bytes.len() as u16).to_be_bytes());
+    header.extend_from_slice(filename_bytes);
+    header.extend_from_slice(&(data.len() as u64).to_be_bytes()); // DATA_LEN
+
+    // Sign header+data
+    let mut signed_blob = header.clone();
+    signed_blob.extend_from_slice(data);
+    let data_hash = hash(&signed_blob);
+    let signature = asymmetric_crypto::id_sign(alg_id, decrypted_priv.expose_secret(), &data_hash)
+        .expect("Signing failed");
+
+    // Output full blob
+    signed_blob.extend_from_slice(&signature);
+    Ok(signed_blob)
+}
+
+pub fn build_asym_encrypted_blob(
+    alg_id: u8,
+    sym_alg_id: u8,
+    key: &PublicKeyEntry,
+    filename: &str,
+    plaintext: &[u8],
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let pub_key = key.public_key();
+    let ciphertext = asymmetric_crypto::id_asym_enc(alg_id, &pub_key, plaintext, Some(sym_alg_id))?;
+
+    let key_id = key.id();
+    let key_id_bytes = key_id.as_bytes();
+    let key_id_len = key_id_bytes.len() as u16;
+
+    let filename_bytes = filename.as_bytes();
+    let filename_len = filename_bytes.len() as u16;
+
+    let mut blob = Vec::new();
+
+    // === Header: MAGIC | ALG_ID | SYM_ALG_ID | KEY_ID_LEN | KEY_ID | FILENAME_LEN ===
+    blob.extend_from_slice(b"ENC2");
+    blob.push(alg_id);
+    blob.push(sym_alg_id);
+    blob.extend_from_slice(&key_id_len.to_be_bytes());
+    blob.extend_from_slice(key_id_bytes);
+    blob.extend_from_slice(&filename_len.to_be_bytes());
+    blob.extend_from_slice(filename_bytes);
+
+    // === Ciphertext ===
+    blob.extend_from_slice(&ciphertext);
+
+    Ok(blob)
+}
+
+pub fn decrypt_private_key(
+    keypair: &key_storage::AsymKeyPair,
+) -> Result<Secret<Vec<u8>>, Box<dyn Error>> {
+    // Prompt for password
+    let kek_password = get_password(false)?; // false = hide input
+
+    // Derive KEK using stored parameters
+    let kek = key_derivation::id_derive_key(
+        keypair.kek_kdf,
+        kek_password,
+        &keypair.kek_salt,
+        SYM_KEY_LEN,
+        &keypair.kek_params,
+    );
+
+    // Decrypt the stored private key
+    let decrypted = symmetric_encryption::id_decrypt(
+        keypair.kek_aead,
+        &kek.expose_secret(),
+        &keypair.private_key,
+        None,
+    )
+    .unwrap();
+
+    Ok(Secret::new(decrypted))
+}
+
 fn main() {
     let cli = cli::Cli::parse();
 
@@ -390,47 +544,38 @@ fn main() {
                         .clone()
                         .expect("Missing input key ID for asymmetric encryption");
 
-                    let keypair: key_storage::AsymKeyPair = key_storage::get_key(&input_key_id)
-                        .unwrap()
-                        .ok_or("Key ID not found in keystore")
-                        .unwrap();
+                    let key = get_unowned_or_owned_public_key(&input_key_id).unwrap();
 
                     let sym_alg_id = match args.aead {
                         Some(ref a) => utils::alg_name_to_id(a).unwrap(),
                         None => profile.aead_alg_id,
                     };
 
-                    let alg_id = keypair.key_type;
-                    let pub_key = &keypair.public_key;
+                    let alg_id = key.key_type();
 
-                    let ciphertext = asymmetric_crypto::id_asym_enc(
-                        alg_id,
-                        pub_key,
-                        &plaintext,
-                        Some(sym_alg_id),
-                    )
-                    .unwrap();
+                    let mut blob =
+                        build_asym_encrypted_blob(alg_id, sym_alg_id, &key, filename, &plaintext)
+                            .expect("Failed to encrypt");
 
+                    if args.sign_key.is_some() {
+                        let sign_key: key_storage::AsymKeyPair =
+                            match key_storage::get_key(args.sign_key.unwrap().as_str()).unwrap() {
+                                Some(k) => k,
+                                None => panic!("Signing key not found."),
+                            };
+                        let sign_private_key = decrypt_private_key(&sign_key).unwrap();
+                        blob = build_signed_blob(
+                            b"SIG2",
+                            sign_key.key_type,
+                            &sign_key.id,
+                            filename,
+                            &blob,
+                            &sign_private_key,
+                        )
+                        .unwrap();
+                    }
                     let mut f = File::create(&out_path).expect("Failed to create output file");
-
-                    // === Write header: MAGIC | ALG_ID | SYM_ALG_ID | KEY_ID_LEN | KEY_ID | FILENAME_LEN ===
-                    let key_id_bytes = keypair.id.as_bytes();
-                    let key_id_len = key_id_bytes.len() as u16;
-
-                    f.write_all(b"ENC2").expect("Failed to write magic");
-                    f.write_all(&[alg_id]).expect("Failed to write alg_id");
-                    f.write_all(&[sym_alg_id])
-                        .expect("Failed to write sym_alg_id");
-
-                    f.write_all(&key_id_len.to_be_bytes())
-                        .expect("Failed to write key ID length");
-                    f.write_all(key_id_bytes).expect("Failed to write key ID");
-
-                    f.write_all(&filename_len.to_be_bytes())
-                        .expect("Failed to write filename length");
-
-                    f.write_all(&ciphertext)
-                        .expect("Failed to write ciphertext");
+                    f.write_all(&blob).expect("Failed to write ciphertext");
 
                     println!(
                         "Asymmetric encrypted file written to {}",
@@ -727,7 +872,7 @@ fn main() {
                 }
 
                 _ => panic!("Unknown encryption format"),
-            }
+            };
         }
 
         cli::Command::Profile(args) => {
@@ -781,19 +926,10 @@ fn main() {
             cli::validate_args(&args);
 
             if does_key_exist(args.id.clone()).unwrap() {
-                print!(
-                    "There is already a key with the id: {}. Overwrite? [y/N]: ",
+                warn_user_or_exit(&format!(
+                    "There is already a key with the id: {}. Overwrite?",
                     args.id
-                );
-                io::stdout().flush().unwrap();
-
-                let mut input = String::new();
-                io::stdin().read_line(&mut input).unwrap();
-
-                if !input.trim().eq_ignore_ascii_case("y") {
-                    println!("Key generation cancelled.");
-                    exit(0);
-                }
+                ));
             }
 
             // Proceed with key generation
@@ -816,8 +952,12 @@ fn main() {
                 }
             }
         }
-        cli::Command::ListKeys => {
-            key_storage::list_keys().expect("Failed to list keys");
+        cli::Command::ListKeys(args) => {
+            if !args.unowned {
+                key_storage::list_keys().expect("Failed to list keys");
+            } else {
+                key_storage::list_unowned_public_keys().expect("Failed to list keys")
+            }
         }
         cli::Command::Wipe(mut args) => {
             if !args.wipe_keys && !args.wipe_profiles {
@@ -825,32 +965,23 @@ fn main() {
                 args.wipe_profiles = true;
             }
             if args.wipe_keys && args.wipe_profiles {
-                print!(
-                    "Are you sure you want to wipe all data? This action cannot be undone. [y/N]: "
+                warn_user_or_exit(
+                    "Are you sure you want to wipe all data? This action cannot be undone.",
                 );
             } else if args.wipe_keys {
-                print!(
-                    "Are you sure you want to wipe all keys? This action cannot be undone. [y/N]: "
+                warn_user_or_exit(
+                    "Are you sure you want to wipe all keys? This action cannot be undone.",
                 );
             } else {
-                print!(
-                    "Are you sure you want to wipe all profiles? This action cannot be undone. [y/N]: "
+                warn_user_or_exit(
+                    "Are you sure you want to wipe all profile data? This action cannot be undone.",
                 );
             }
-            io::stdout().flush().unwrap();
-            let mut input = String::new();
-            io::stdin().read_line(&mut input).unwrap();
-
-            if input.trim().eq_ignore_ascii_case("y") {
-                if args.wipe_profiles {
-                    user::wipe_profiles().unwrap();
-                }
-                if args.wipe_keys {
-                    key_storage::wipe_keystore().unwrap();
-                }
-                println!("Wipe successfull.");
-            } else {
-                println!("Wipe cancelled.");
+            if args.wipe_profiles {
+                user::wipe_profiles().expect("Failed to wipe profile data.");
+            }
+            if args.wipe_keys {
+                key_storage::wipe_keystore().expect("Failed to wipe keys.");
             }
         }
 
@@ -870,7 +1001,7 @@ fn main() {
             let filename = input_path.file_name().unwrap().to_str().unwrap();
             let data = read_file(input_path.to_str().unwrap()).unwrap();
 
-            // … load & decrypt private key exactly as before …
+            // load & decrypt private key
             let keypair: key_storage::AsymKeyPair = key_storage::get_key(&args.key_id)
                 .unwrap()
                 .ok_or("Key ID not found in keystore")
@@ -975,11 +1106,9 @@ fn main() {
             let data_hash = hash(&signed_blob);
 
             // === Load public key ===
-            let keypair: key_storage::AsymKeyPair = key_storage::get_key(&key_id)
+            let pub_key = get_unowned_or_owned_public_key(&key_id)
                 .unwrap()
-                .ok_or("Key ID not found")
-                .unwrap();
-            let pub_key = keypair.public_key;
+                .public_key();
 
             // === Verify ===
             asymmetric_crypto::id_verify(alg_id, &pub_key, &data_hash, signature)
@@ -994,6 +1123,40 @@ fn main() {
                 f.write_all(data).unwrap();
                 println!("Unsigned data written to '{}'", out.display());
             }
+        }
+        cli::Command::ExportKey(args) => {
+            let key = key_storage::export_key(args.key_id.as_str()).unwrap();
+            let mut key_file = Vec::new();
+            key_file.extend_from_slice(b"KEY1");
+            key_file.extend_from_slice(&key);
+
+            let file_name = match args.name {
+                Some(s) => s,
+                None => String::from("Public_key"),
+            };
+            let output_path = PathBuf::from(&file_name).with_extension("pub");
+            let mut f = File::create(&output_path).expect("Failed to create output file");
+            f.write_all(&key_file).unwrap();
+            println!("Public key written to '{}'", output_path.display());
+        }
+
+        cli::Command::ImportKey(args) => {
+            cli::validate_args(&args);
+            let key_path = PathBuf::from(&args.input_file);
+            let raw = read_file(key_path.to_str().unwrap()).unwrap();
+            let mut cursor = std::io::Cursor::new(&raw);
+
+            // === Parse header ===
+            let mut magic = [0u8; 4];
+            cursor.read_exact(&mut magic).unwrap();
+            if &magic != b"KEY1" {
+                panic!("Bad magic");
+            }
+
+            // add warning about overwriting keys?
+            let key = raw[4..].to_vec();
+            key_storage::import_key(&key, args.name).expect("Failed to import key");
+            println!("Public key imported successfully")
         }
     }
 }

@@ -187,7 +187,7 @@ pub enum Command {
 
     /// List all existing profiles
     #[clap(name = "list-keys")]
-    ListKeys,
+    ListKeys(ListKeyArgs),
 
     /// Clear all existing keys and profiles
     Wipe(WipeArgs),
@@ -199,6 +199,12 @@ pub enum Command {
     Sign(SignArgs),
 
     Verify(VerifyArgs),
+
+    #[clap(name = "export")]
+    ExportKey(ExportKeyArgs),
+
+    #[clap(name = "import")]
+    ImportKey(ImportKeyArgs),
 }
 
 // Handles encyption command
@@ -441,6 +447,12 @@ impl Validatable for KeyGenArgs {
     }
 }
 
+#[derive(Args)]
+pub struct ListKeyArgs {
+    #[arg(short = 'u', long = "unowned", default_value_t = false)]
+    pub unowned: bool,
+}
+
 // Allows for all profiles and keys to be wiped
 #[derive(Args)]
 pub struct WipeArgs {
@@ -480,6 +492,26 @@ pub struct VerifyArgs {
 impl Validatable for VerifyArgs {
     fn validate(&self) -> Result<(), Box<dyn Error>> {
         validate_path(self.input.as_str())?;
+        Ok(())
+    }
+}
+
+#[derive(Args)]
+pub struct ExportKeyArgs {
+    pub key_id: String,
+    #[arg(short = 'n', long = "name")]
+    pub name: Option<String>,
+}
+
+#[derive(Args)]
+pub struct ImportKeyArgs {
+    pub input_file: String,
+    #[arg(short = 'n', long = "name")]
+    pub name: Option<String>,
+}
+impl Validatable for ImportKeyArgs {
+    fn validate(&self) -> Result<(), Box<dyn Error>> {
+        validate_path(self.input_file.as_str())?;
         Ok(())
     }
 }

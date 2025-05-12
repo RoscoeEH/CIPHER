@@ -46,6 +46,30 @@ lazy_static! {
     };
 }
 
+// Repeat for public key database
+fn get_public_keystore_path() -> PathBuf {
+    let base_dir = if cfg!(debug_assertions) {
+        // Dev path
+        PathBuf::from("./public_keystore")
+    } else {
+        // Production path
+        let project_dirs = ProjectDirs::from("com", "cipher", "cipher")
+            .expect("Could not determine project directories");
+        project_dirs.data_local_dir().join("public_keystore")
+    };
+
+    std::fs::create_dir_all(&base_dir).expect("Failed to create keystore directory");
+    base_dir
+}
+
+// Rocksdb database for storing keys
+lazy_static! {
+    static ref PUBLIC_KEY_STORE: Mutex<DB> = {
+        let path = get_public_keystore_path();
+        Mutex::new(DB::open_default(path).unwrap())
+    };
+}
+
 // Allows for simplifictaion of storing function
 pub trait HasId {
     fn id(&self) -> &str;
@@ -279,5 +303,96 @@ pub fn delete_key(id: &str) -> Result<(), Box<dyn Error>> {
     let db = KEY_STORE.lock().unwrap();
     db.delete(id.as_bytes())
         .map_err(|e| Box::new(e) as Box<dyn Error>)?;
+    Ok(())
+}
+
+// === Key I/0 operations ===
+#[derive(Serialize, Deserialize, Debug)]
+pub struct UnownedPublicKey {
+    pub id: String,
+    pub internal_id: String,
+    pub key_type: u8,
+    pub public_key: Vec<u8>,
+    pub created: u64,
+}
+
+impl HasId for UnownedPublicKey {
+    fn id(&self) -> &str {
+        &self.id
+    }
+}
+
+pub fn export_key(id: &str) -> Result<Vec<u8>, Box<dyn Error>> {
+    let keypair: AsymKeyPair = match get_key(id).unwrap() {
+        Some(k) => k,
+        None => return Err("Key not found".into()),
+    };
+    let public_key = UnownedPublicKey {
+        id: keypair.id.clone(),
+        internal_id: keypair.id,
+        key_type: keypair.key_type,
+        public_key: keypair.public_key,
+        created: keypair.created,
+    };
+    let serialized = bincode::serialize(&public_key).unwrap();
+    Ok(serialized)
+}
+
+pub fn import_key(
+    key_vec: &[u8],
+    alt_id: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut key: UnownedPublicKey = bincode::deserialize(key_vec)?;
+
+    if alt_id.is_some() {
+        key.id = alt_id.unwrap();
+    }
+
+    let serialized =
+        bincode::serialize(&key).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+
+    let id = key.id;
+
+    let db = PUBLIC_KEY_STORE.lock().unwrap();
+    db.put(id, serialized)
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+
+    Ok(())
+}
+
+pub fn get_unowned_public_key(
+    id: &str,
+) -> Result<Option<UnownedPublicKey>, Box<dyn std::error::Error>> {
+    let db = PUBLIC_KEY_STORE.lock().unwrap();
+    match db.get(id) {
+        Ok(Some(serialized)) => match bincode::deserialize(&serialized) {
+            Ok(deserialized) => Ok(Some(deserialized)),
+            Err(e) => Err(Box::new(e)),
+        },
+        Ok(None) => Ok(None),
+        Err(e) => Err(Box::new(e)),
+    }
+}
+
+pub fn list_unowned_public_keys() -> Result<(), Box<dyn std::error::Error>> {
+    let db = PUBLIC_KEY_STORE.lock().unwrap();
+    let iter = db.iterator(rocksdb::IteratorMode::Start);
+
+    println!("Unowned Public Keys:");
+    for result in iter {
+        let (_key, value) = result?;
+
+        if let Ok(unowned) = bincode::deserialize::<UnownedPublicKey>(&value) {
+            let datetime = u64_to_datetime(unowned.created);
+            println!(
+                "- ID: {}\n  Type: {}\n  Created: {}\n  Public Key Length: {}\n",
+                unowned.id,
+                alg_id_to_name(unowned.key_type),
+                datetime,
+                unowned.public_key.len(),
+            );
+        }
+    }
+
     Ok(())
 }

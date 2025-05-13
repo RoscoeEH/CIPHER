@@ -213,6 +213,9 @@ pub struct EncryptArgs {
     pub input: Option<String>,
     pub output: Option<String>,
 
+    #[arg(short = 'p', long = "profile", default_value_t = String::from("Default"))]
+    pub profile: String,
+
     #[arg(long = "kdf")]
     pub kdf: Option<String>,
 
@@ -255,6 +258,19 @@ impl Validatable for EncryptArgs {
         match &self.aead {
             Some(s) => valid_aead(s)?,
             None => {}
+        }
+        // If a profile is listed ensure it exists, otherwise make sure a default profile exists
+        match get_profile(self.profile.as_str()) {
+            Ok(Some(_profile)) => {}
+            Ok(None) => {
+                if self.profile.as_str() == "Default" {
+                    init_profile()
+                        .map_err(|e| format!("Failed to initialize default profile: {e}"))?;
+                } else {
+                    return Err(format!("Could not find profile: {}", self.profile).into());
+                }
+            }
+            Err(e) => return Err(e),
         }
 
         Ok(())
@@ -456,12 +472,16 @@ pub struct WipeArgs {
     pub wipe_keys: bool,
     #[arg(short = 'p', long = "profiles", default_value_t = false)]
     pub wipe_profiles: bool,
+    #[arg(short = 'u', long = "unowned", default_value_t = false)]
+    pub wipe_unowned_keys: bool,
 }
 
 // Delete an individul key
 #[derive(Args)]
 pub struct DeleteKeyArgs {
     pub id: String,
+    #[arg(short = 'u', long = "unowned", default_value_t = false)]
+    pub unowned: bool,
 }
 
 // Handles commands to sign data

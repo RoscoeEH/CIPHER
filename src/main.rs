@@ -337,34 +337,6 @@ fn gen_sym_key(
     Ok(())
 }
 
-/// Checks if a key with the given ID exists in the keystore.
-///
-/// This function attempts to look up both symmetric (`SymKey`) and asymmetric (`AsymKeyPair`)
-/// key entries with the provided ID. If either exists, the function returns `true`.
-///
-/// # Arguments
-/// * `id` - The string identifier of the key to check for existence.
-///
-/// # Returns
-/// * `Result<bool, Box<dyn Error>>` - Returns `Ok(true)` if a key with the given ID exists,
-///   `Ok(false)` if not, or an `Err` if an unexpected error occurs during lookup.
-///
-/// # Notes
-/// Errors from individual key lookups are ignored (assumed as "not found").
-fn does_key_exist(id: String) -> Result<bool, Box<dyn Error>> {
-    // Check if a symmetric or asymmetric key with the same ID already exists
-    let sym_key_exists = match key_storage::get_key::<key_storage::SymKey>(id.as_str()) {
-        Ok(opt) => opt.is_some(),
-        Err(_e) => false,
-    };
-
-    let asym_key_exists = match key_storage::get_key::<key_storage::AsymKeyPair>(id.as_str()) {
-        Ok(opt) => opt.is_some(),
-        Err(_e) => false,
-    };
-    Ok(sym_key_exists || asym_key_exists)
-}
-
 /// Reads the entire contents of a file into a byte vector.
 ///
 /// Opens the file at the specified path and reads all bytes into memory.
@@ -1069,7 +1041,12 @@ fn main() {
         // Handles all symmetric and asymmetric encryption; also can sign encrypted blobs
         cli::Command::Encrypt(args) => {
             cli::validate_args(&args);
-            let profile = user::init_profile().unwrap();
+
+            // Checks id the user provided a profile
+            let profile = match args.profile.as_str() {
+                "Default" => user::init_profile().unwrap(),
+                other => user::get_profile(other).unwrap().unwrap(),
+            };
 
             let input_path = PathBuf::from(args.input.clone().unwrap());
             let filename = input_path.file_name().unwrap().to_str().unwrap();
@@ -1332,7 +1309,7 @@ fn main() {
             cli::validate_args(&args);
 
             // Avoid overwriting keys
-            if does_key_exist(args.id.clone()).unwrap() {
+            if key_storage::does_key_exist(args.id.clone()).unwrap() {
                 warn_user_or_exit(&format!(
                     "There is already a key with the id: {}. Overwrite?",
                     args.id
@@ -1369,37 +1346,43 @@ fn main() {
         }
         // Erases option to erase all keys and data
         cli::Command::Wipe(mut args) => {
-            if !args.wipe_keys && !args.wipe_profiles {
+            // if none were specified wipe all
+            if !args.wipe_keys && !args.wipe_profiles && !args.wipe_unowned_keys {
                 args.wipe_keys = true;
                 args.wipe_profiles = true;
+                args.wipe_unowned_keys = true;
             }
-            if args.wipe_keys && args.wipe_profiles {
-                warn_user_or_exit(
-                    "Are you sure you want to wipe all data? This action cannot be undone.",
-                );
-            } else if args.wipe_keys {
-                warn_user_or_exit(
-                    "Are you sure you want to wipe all keys? This action cannot be undone.",
-                );
-            } else {
-                warn_user_or_exit(
-                    "Are you sure you want to wipe all profile data? This action cannot be undone.",
-                );
-            }
+            warn_user_or_exit(
+                "Are you sure you want to wipe all data? This action cannot be undone.",
+            );
+
             if args.wipe_profiles {
                 user::wipe_profiles().expect("Failed to wipe profile data.");
             }
             if args.wipe_keys {
                 key_storage::wipe_keystore().expect("Failed to wipe keys.");
             }
+            if args.wipe_unowned_keys {
+                key_storage::wipe_public_keystore().expect("Failed to wipe unowned keys")
+            }
         }
 
         cli::Command::DeleteKey(args) => {
-            if does_key_exist(args.id.clone()).unwrap() {
-                key_storage::delete_key(args.id.as_str()).expect("Failed to delete key.");
-                println!("Key has been deleted.")
+            if args.unowned {
+                if key_storage::does_public_key_exist(args.id.clone()).unwrap() {
+                    key_storage::delete_public_key(args.id.as_str())
+                        .expect("Failed to delete key.");
+                    println!("Key has been deleted.")
+                } else {
+                    println!("Key does not exist.")
+                }
             } else {
-                println!("Key does not exist.")
+                if key_storage::does_key_exist(args.id.clone()).unwrap() {
+                    key_storage::delete_key(args.id.as_str()).expect("Failed to delete key.");
+                    println!("Key has been deleted.")
+                } else {
+                    println!("Key does not exist.")
+                }
             }
         }
 

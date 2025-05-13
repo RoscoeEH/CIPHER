@@ -306,6 +306,34 @@ pub fn delete_key(id: &str) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Checks if a key with the given ID exists in the keystore.
+///
+/// This function attempts to look up both symmetric (`SymKey`) and asymmetric (`AsymKeyPair`)
+/// key entries with the provided ID. If either exists, the function returns `true`.
+///
+/// # Arguments
+/// * `id` - The string identifier of the key to check for existence.
+///
+/// # Returns
+/// * `Result<bool, Box<dyn Error>>` - Returns `Ok(true)` if a key with the given ID exists,
+///   `Ok(false)` if not, or an `Err` if an unexpected error occurs during lookup.
+///
+/// # Notes
+/// Errors from individual key lookups are ignored (assumed as "not found").
+pub fn does_key_exist(id: String) -> Result<bool, Box<dyn Error>> {
+    // Check if a symmetric or asymmetric key with the same ID already exists
+    let sym_key_exists = match get_key::<SymKey>(id.as_str()) {
+        Ok(opt) => opt.is_some(),
+        Err(_e) => false,
+    };
+
+    let asym_key_exists = match get_key::<AsymKeyPair>(id.as_str()) {
+        Ok(opt) => opt.is_some(),
+        Err(_e) => false,
+    };
+    Ok(sym_key_exists || asym_key_exists)
+}
+
 // === Key I/0 operations ===
 #[derive(Serialize, Deserialize, Debug)]
 pub struct UnownedPublicKey {
@@ -395,4 +423,71 @@ pub fn list_unowned_public_keys() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+/// Wipes all data from the public key store by deleting and recreating the underlying database.
+///
+/// This function permanently deletes the RocksDB instance at the configured public key store path,
+/// removing all stored keys. It then reinitializes the database to ensure it's ready for reuse.
+///
+/// # Returns
+/// * `Ok(())` on success.
+/// * `Err` if the database cannot be destroyed or recreated.
+///
+/// # Side Effects
+/// - Permanently deletes all public keys.
+/// - Reinitializes an empty public key store at the same location.
+///
+/// # Errors
+/// Returns an error if:
+/// - The key store cannot be destroyed (e.g., path permissions issues (may implement this)).
+/// - The key store cannot be recreated.
+pub fn wipe_public_keystore() -> Result<(), Box<dyn Error>> {
+    let keystore_path = get_public_keystore_path();
+
+    // Delete the existing keystore database
+    DB::destroy(&Options::default(), &keystore_path)?;
+
+    // Recreate the database to ensure it exists for future use
+    DB::open_default(&keystore_path)?;
+
+    Ok(())
+}
+
+/// Deletes a single key by its ID from the public keystore.
+///
+/// # Arguments
+/// * `id` – the identifier of the key to remove
+///
+/// # Returns
+/// * `Ok(())` if the delete succeeded (even if the key didn't exist)
+/// * `Err(_)` if the underlying RocksDB delete failed
+pub fn delete_public_key(id: &str) -> Result<(), Box<dyn Error>> {
+    let db = PUBLIC_KEY_STORE.lock().unwrap();
+    db.delete(id.as_bytes())
+        .map_err(|e| Box::new(e) as Box<dyn Error>)?;
+    Ok(())
+}
+
+/// Checks if a public key with the given ID exists in the keystore.
+///
+/// This function attempts to look up unowned public key entries
+/// with the provided ID. If either exists, the function returns `true`.
+///
+/// # Arguments
+/// * `id` - The string identifier of the key to check for existence.
+///
+/// # Returns
+/// * `Result<bool, Box<dyn Error>>` - Returns `Ok(true)` if a key with the given ID exists,
+///   `Ok(false)` if not, or an `Err` if an unexpected error occurs during lookup.
+///
+/// # Notes
+/// Errors from individual key lookups are ignored (assumed as "not found").
+pub fn does_public_key_exist(id: String) -> Result<bool, Box<dyn Error>> {
+    let key_exists = match get_unowned_public_key(id.as_str()) {
+        Ok(opt) => opt.is_some(),
+        Err(_e) => false,
+    };
+
+    Ok(key_exists)
 }

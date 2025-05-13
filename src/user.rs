@@ -11,8 +11,6 @@
 // Manages user profiles, including serialization and RocksDB storage.
 // User profiles contain preferred encryption parameters (KDF, AEAD, and their configuration).
 
-use crate::constants::*;
-use crate::utils::alg_id_to_name;
 use bincode;
 use directories::ProjectDirs;
 use lazy_static::lazy_static;
@@ -22,6 +20,9 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::path::PathBuf;
 use std::sync::Mutex;
+
+use crate::constants::*;
+use crate::utils::alg_id_to_name;
 
 // Enables storage of profiles in the application
 fn get_db_path() -> PathBuf {

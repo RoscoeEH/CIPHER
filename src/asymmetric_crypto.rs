@@ -50,8 +50,8 @@ use std::error::Error;
 use zeroize::Zeroize;
 
 use crate::constants::*;
-use crate::random::*;
-use crate::symmetric_encryption::*;
+use crate::random::get_nonce;
+use crate::symmetric_encryption::{id_decrypt, id_encrypt};
 
 // === RSA Related Algorithms ===
 /// Generates a new RSA key pair with the given number of bits.
@@ -625,7 +625,7 @@ fn dilithium_key_gen() -> Result<(Secret<Vec<u8>>, Vec<u8>), Box<dyn std::error:
 /// # Errors
 ///
 /// Returns an error if the private key is invalid or signing fails.
-pub fn dilithium_sign(
+fn dilithium_sign(
     message: &[u8],
     private_key_bytes: &[u8],
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
@@ -657,7 +657,7 @@ pub fn dilithium_sign(
 /// # Errors
 ///
 /// Returns an error if the public key, signature, or verification fails.
-pub fn dilithium_verify(
+fn dilithium_verify(
     public_key_bytes: &[u8],
     message: &[u8],
     signature: &[u8],

@@ -11,7 +11,7 @@
 // Provides logic for serializing, storing, retrieving, and managing
 // symmetric and asymmetric keys in a RocksDB-backed keystore.
 
-use crate::utils::*;
+use crate::utils::{alg_id_to_name, u64_to_datetime};
 use bincode;
 use directories::ProjectDirs;
 use lazy_static::lazy_static;

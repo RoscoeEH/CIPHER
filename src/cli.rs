@@ -12,7 +12,7 @@
 // validating arguments, and routing user input to the appropriate functions.
 
 use crate::constants::*;
-use crate::user::*;
+use crate::user::{get_new_profile, get_profile, init_profile};
 use clap::{Args, Parser, Subcommand};
 use std::error::Error;
 use std::path::Path;

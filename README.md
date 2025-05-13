@@ -73,6 +73,8 @@ The `cipher` CLI tool provides a variety of commands to handle encryption, decry
 - `keygen`: Generate a new symmetric or asymmetric key pair (RSA or ECC). Can be associated with a profile for customized encryption settings.
 - `list-keys`: Display all stored keys in the database.
 - `delete-key`: Permanently delete a key by its ID.
+- `export-key`: Export a public key as a `.pub` file for sharing or further use.
+- `import-key`: Import a `.pub` file containing a public key for use in encryption or verification.
 
 #### 🧾 Profiles
 
@@ -89,18 +91,21 @@ The `cipher` CLI tool provides a variety of commands to handle encryption, decry
 
 #### 🔐 `encrypt`
 
-| Argument         | Type      | Description                                                                 |
-|------------------|-----------|-----------------------------------------------------------------------------|
-| `input`          | `String`  | Path to the file to encrypt *(required)*                                    |
-| `output`         | `String`  | Path to write the encrypted `.enc` file *(optional)*                        |
-| `--asym`, `-a`   | `bool`    | Use asymmetric encryption *(requires `--key`)*                              |
-| `--kdf`          | `String`  | Override KDF algorithm (e.g., `argon2`, `pbkdf2`) *(optional)*              |
-| `--mem-cost`     | `u32`     | Argon2 memory cost *(optional)*                                             |
-| `--time-cost`    | `u32`     | Argon2 time cost *(optional)*                                               |
-| `--parallelism`  | `u32`     | Argon2 parallelism *(optional)*                                             |
-| `--iters`        | `u32`     | PBKDF2 iterations *(optional)*                                              |
-| `--aead`         | `String`  | AEAD algorithm (e.g., `aes256gcm`, `chacha20poly1305`) *(optional)*         |
-| `--key`, `-k`    | `String`  | Use existing key ID *(required for asymmetric encryption)*                  |
+| Argument          | Type     | Description                                                                |
+|-------------------|----------|----------------------------------------------------------------------------|
+| `input`           | `String` | Path to the file to encrypt *(required)*                                   |
+| `output`          | `String` | Path to write the encrypted `.enc` file *(optional)*                       |
+| `--key`, `-k`     | `String` | Use existing key ID *(will default to symmetric encryption without a key)* |
+| `--sign`, `-s`    | `String` | Sign the file using the specified private key *(optional)*                 |
+| `--profile`, `-p` | `String` | Use default encryption parameters from a non-default profile *(optional)*  |
+| `--kdf`           | `String` | KDF algorithm to use (e.g., `argon2`, `pbkdf2`) *(optional)*               |
+| `--mem-cost`      | `u32`    | Argon2 memory cost *(optional)*                                            |
+| `--time-cost`     | `u32`    | Argon2 time cost *(optional)*                                              |
+| `--parallelism`   | `u32`    | Argon2 parallelism *(optional)*                                            |
+| `--iters`         | `u32`    | PBKDF2 iterations *(optional)*                                             |
+| `--aead`          | `String` | AEAD algorithm (e.g., `aes256gcm`, `chacha20poly1305`) *(optional)*        |
+
+Encrypts a file into a `.enc` file. Can be used for asymmetric encryption if an asymmetric key is provided. Optionally signes the ciphertext with a private key. If not key is provided it will default to symmetric encryption with a single use key.
 
 #### 🔓 `decrypt`
 
@@ -109,16 +114,20 @@ The `cipher` CLI tool provides a variety of commands to handle encryption, decry
 | `input`          | `String`  | Path to the encrypted `.enc` file *(required)*     |
 | `output`         | `String`  | Path to write the decrypted file *(optional)*      |
 
+Decrypts all `.enc` file. Verifies a signature if signed.
+
 #### 🧬 `profile`
 
 | Argument         | Type      | Description                                                                            |
 |------------------|-----------|----------------------------------------------------------------------------------------|
 | `--profile`, `-p`| `String`  | Profile ID to update *(defaults to `Default`)*                                        |
-| `update_field`   | `String`  | Field to update (`memory_cost`, `time_cost`, etc.) *(required)*                       |
+| `update_field`   | `String`  | Field to update (`kdf`, `aead`, `memory_cost`, `time_cost`, `parallelism`, or `iterations`) *(required)*                       |
 | `value`          | `String`  | New value for the specified field *(required)*                                        |
 
+Updated profiles that contain default parameters for key derivation and symmetric encryption.
+
 #### 📋 `list-profiles`
-Does not require any inputs.
+Lists all existing profiles.
 
 #### 🔑 `key-gen`
 
@@ -130,21 +139,34 @@ Does not require any inputs.
 | `--bits`, `-b`        | `usize`   | RSA key size in bits (`2048`, `3072`, `4096`) *(RSA only)*                 |
 | `--profile`, `-p`     | `String`  | Associated profile ID *(defaults to `Default`)*                            |
 
+Generates a new key or keypair.
+
 #### 🗝️ `list-keys`
-Does not require any inputs.
+
+| Argument            | Type   | Description                                                           |
+|---------------------|--------|-----------------------------------------------------------------------|
+| `--unowned`, `-u`   | `bool` | List only keys that have been imported *(optional, default: false)* |
+
+Displays stored keys in the database. By default includes owned keys unless `--unowned` is specified.
 
 #### ❌ `delete-key`
 
-| Argument | Type     | Description                  |
-|----------|----------|------------------------------|
-| `id`     | `String` | ID of the key to delete      |
+| Argument            | Type     | Description                                           |
+|---------------------|----------|-------------------------------------------------------|
+| `id`                | `String` | ID of the key to delete *(required)*                 |
+| `--unowned`, `-u`   | `bool`   | Delete from the imported (unowned) key list *(optional)* |
+
+Deletes a key by ID. Use `--unowned` if the key was imported and not locally generated.
 
 #### 💣 `wipe`
 
-| Argument         | Type   | Description                            |
-|------------------|--------|----------------------------------------|
-| `--keys`, `-k`   | `bool` | Wipe all keys                          |
-| `--profiles`, `-p` | `bool` | Wipe all profiles                      |
+| Argument               | Type   | Description                                        |
+|------------------------|--------|----------------------------------------------------|
+| `--keys`, `-k`         | `bool` | Wipe all keys                                      |
+| `--profiles`, `-p`     | `bool` | Wipe all profiles                                  |
+| `--unowned`, `-u`      | `bool` | Wipe all imported (unowned) keys                   |
+
+If no flags are provided, **all keys and profiles will be wiped by default**.
 
 #### ✍️ `sign`
 
@@ -153,6 +175,7 @@ Does not require any inputs.
 | `input`          | `String`  | File to sign *(required)*          |
 | `--key`, `-k`    | `String`  | ID of the private key to sign with |
 
+Signs a file and creates a `.sig` file.
 
 #### ✅ `verify`
 
@@ -161,6 +184,25 @@ Does not require any inputs.
 | `input`              | `String` | Path to `.sig` file to verify *(required)*         |
 | `--only-verify`, `-o`| `bool`   | Only verify, do not output original file (optional)|
 
+Verifies `.sig` files, can also strip the signature and header from the file.
+
+#### 📤 `export-key`
+
+| Argument           | Type      | Description                                                      |
+|--------------------|-----------|------------------------------------------------------------------|
+| `key_id`           | `String`  | ID of the key to export *(required)*                             |
+| `--name`, `-n`     | `String`  | Optional filename (without extension) for the exported `.pub` file |
+
+Exports a public key associated with the given ID to a `.pub` file. If no name is provided, the key ID is used as the filename.
+
+#### 📥 `import-key`
+
+| Argument            | Type      | Description                                                             |
+|---------------------|-----------|-------------------------------------------------------------------------|
+| `input_file`        | `String`  | Path to the `.pub` file to import *(must end with `.pub`)*              |
+| `--name`, `-n`      | `String`  | Optional name to associate with the imported key                        |
+
+Imports a public key from a `.pub` file into the local key database. The file must have a `.pub` extension. Optionally assigns a user-defined name to the key.
 
 ## File Format
 
@@ -215,14 +257,17 @@ Unlike symmetric encryption, the ciphertext includes a key ID so the associated 
 
 The signature is generated over the **header and file content**, hashed and signed using the appropriate algorithm.
 
+### `.enc` — Signed Encrypted File Format
+
+Encrypted files may be wrapped in a signature using the `.enc` extension. These files combine the encrypted content with a signature. These have the same external header as a `.sig` file with `SIG2` as the magic bytes.
 
 ## Security Notes
 
 - Uses for password-based key derivation configurable parameters, 16-byte salt, 32-byte derived key.
 - Symmetric encryption with a 12-byte nonce and AEAD for integrity and confidentiality.
-- Asymmetric encryption wraps a symmetric key using a public key and includes only the key ID, not the public key itself, in the `.enc` file.
+- Asymmetric encryption schemes with optional signing for authenticity
 - Digital signatures use asymmetric keys and sign both file metadata and contents.
-- Passwords and decrypted key material are **zeroized from memory** after use.
+- Passwords and plaintext key material are **zeroized from memory** after use.
 
 ### Full List of Supported Algorithms
 
@@ -239,7 +284,7 @@ The signature is generated over the **header and file content**, hashed and sign
 - **Asymmetric Signing and Verifying**
   - ECDSA-P256 (SHA256)
   - RSA PKCS1v1.5
-  - Dilithium2 (Post-quantum signature scheme)  
+  - Dilithium2 (Post-quantum signature scheme)
 ### File Storage Details
 
 - `.enc` files:

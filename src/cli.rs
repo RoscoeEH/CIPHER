@@ -213,9 +213,6 @@ pub struct EncryptArgs {
     pub input: Option<String>,
     pub output: Option<String>,
 
-    #[arg(short = 'a', long = "aym", default_value_t = false)]
-    pub asym: bool,
-
     #[arg(long = "kdf")]
     pub kdf: Option<String>,
 
@@ -236,6 +233,9 @@ pub struct EncryptArgs {
 
     #[arg(short = 'k', long = "key")]
     pub input_key: Option<String>,
+
+    #[arg(short = 's', long = "sign")]
+    pub sign_key: Option<String>,
 }
 
 impl Validatable for EncryptArgs {
@@ -243,10 +243,6 @@ impl Validatable for EncryptArgs {
         match &self.input {
             Some(path) => validate_path(path)?,
             None => return Err("No input file found.".into()),
-        }
-        // Ensures asym encryption must have a key
-        if self.asym && !self.input_key.is_some() {
-            return Err("Must provide key for asymmetric encryption.".into());
         }
         // Does not need kdf and input key
         if self.input_key.is_some() && self.kdf.is_some() {

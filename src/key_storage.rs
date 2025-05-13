@@ -328,8 +328,8 @@ pub fn export_key(id: &str) -> Result<Vec<u8>, Box<dyn Error>> {
         None => return Err("Key not found".into()),
     };
     let public_key = UnownedPublicKey {
-        id: keypair.id.clone(),
-        internal_id: keypair.id,
+        id: keypair.id.clone(), // Id may be changed to avoid conflicts with other public_keys
+        internal_id: keypair.id, // This is the label for whoever owns the private key
         key_type: keypair.key_type,
         public_key: keypair.public_key,
         created: keypair.created,

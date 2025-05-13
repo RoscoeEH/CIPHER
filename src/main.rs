@@ -46,19 +46,25 @@ use clap::Parser;
 /// # Returns
 /// * `Ok(Secret<String>)` containing the password if input (and verification) succeeded.
 /// * `Err` if reading fails or the passwords do not match.
-fn get_password(verify: bool) -> Result<Secret<String>, Box<dyn Error>> {
-    println!("Enter password: ");
-    let password = Secret::new(read_password()?);
+fn get_password(verify: bool, is_sym_key: Option<bool>) -> Secret<String> {
+    match is_sym_key {
+        Some(true) => println!("Enter password for symmetric key: "),
+        Some(false) => println!("Enter password for asymmetric key: "),
+        None => println!("Enter password: "),
+    };
+
+    let password = Secret::new(read_password().expect("rpassword failure".into()));
 
     if verify {
         println!("Re-enter password: ");
-        let verify_password = Secret::new(read_password()?);
+        let verify_password = Secret::new(read_password().expect("rpassword failure".into()));
         if verify_password.expose_secret() != password.expose_secret() {
-            return Err("The passwords did not match.".into());
+            println!("The passwords did not match.");
+            exit(0); // Changed from panic for nicer error messages
         }
     }
 
-    Ok(password)
+    password
 }
 
 /// Parses a string into a `u32`, exiting the program with an error message if parsing fails.
@@ -119,7 +125,7 @@ pub fn generate_key_from_args(
         None => profile.kdf_id,
     };
 
-    let password = get_password(true).unwrap();
+    let password = get_password(true, Some(true));
     let salt = random::get_salt(); // Vec<u8>
 
     let key = match kdf_id {
@@ -391,27 +397,43 @@ impl PublicKeyEntry {
     }
 }
 
-fn get_unowned_or_owned_public_key(key_id: &str) -> Result<PublicKeyEntry, Box<dyn Error>> {
+fn get_unowned_or_owned_public_key(
+    key_id: &str,
+    quiet: bool,
+) -> Result<Option<PublicKeyEntry>, Box<dyn Error>> {
     let public_key = key_storage::get_unowned_public_key(&key_id)
         .expect("Failed to check for unowned public key.");
 
     let key_entry = match public_key {
         Some(k) => PublicKeyEntry::Unowned(k),
         None => {
-            warn_user_or_exit(&format!(
+            if !quiet {
+                warn_user_or_exit(&format!(
                 "Could not find unowned public key with ID: {}. Would you like to try an owned key?",
                 key_id
-            ));
-            let keypair = key_storage::get_key::<key_storage::AsymKeyPair>(&key_id)?
-                .ok_or("Key ID not found")?;
-            PublicKeyEntry::Owned(keypair)
+            ))
+            };
+
+            // Try getting owned key of the expected type (AsymKeyPair)
+            match key_storage::get_key::<key_storage::AsymKeyPair>(&key_id) {
+                Ok(Some(keypair)) => PublicKeyEntry::Owned(keypair),
+                Ok(None) => return Ok(None), // Key not found
+                Err(e) => {
+                    // If it's a type mismatch error (e.g., found SymKey instead of AsymKeyPair), return None
+                    if e.to_string().contains("expected type `AsymKeyPair`") {
+                        return Ok(None);
+                    } else {
+                        return Err(e.into());
+                    }
+                }
+            }
         }
     };
 
-    Ok(key_entry)
+    Ok(Some(key_entry))
 }
 
-pub fn build_signed_blob(
+fn build_signed_blob(
     magic: &'static [u8; 4],
     alg_id: u8,
     key_id: &str,
@@ -444,7 +466,7 @@ pub fn build_signed_blob(
     Ok(signed_blob)
 }
 
-pub fn build_asym_encrypted_blob(
+fn build_asym_encrypted_blob(
     alg_id: u8,
     sym_alg_id: u8,
     key: &PublicKeyEntry,
@@ -452,14 +474,16 @@ pub fn build_asym_encrypted_blob(
     plaintext: &[u8],
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let pub_key = key.public_key();
-    let ciphertext = asymmetric_crypto::id_asym_enc(alg_id, &pub_key, plaintext, Some(sym_alg_id))?;
+
+    let data_to_encrypt = plaintext.to_vec();
+
+    let ciphertext =
+        asymmetric_crypto::id_asym_enc(alg_id, &pub_key, &data_to_encrypt, Some(sym_alg_id))?;
 
     let key_id = key.id();
     let key_id_bytes = key_id.as_bytes();
     let key_id_len = key_id_bytes.len() as u16;
-
-    let filename_bytes = filename.as_bytes();
-    let filename_len = filename_bytes.len() as u16;
+    let filename_len = filename.as_bytes().len() as u16;
 
     let mut blob = Vec::new();
 
@@ -470,7 +494,6 @@ pub fn build_asym_encrypted_blob(
     blob.extend_from_slice(&key_id_len.to_be_bytes());
     blob.extend_from_slice(key_id_bytes);
     blob.extend_from_slice(&filename_len.to_be_bytes());
-    blob.extend_from_slice(filename_bytes);
 
     // === Ciphertext ===
     blob.extend_from_slice(&ciphertext);
@@ -478,11 +501,11 @@ pub fn build_asym_encrypted_blob(
     Ok(blob)
 }
 
-pub fn decrypt_private_key(
+fn decrypt_private_key(
     keypair: &key_storage::AsymKeyPair,
 ) -> Result<Secret<Vec<u8>>, Box<dyn Error>> {
     // Prompt for password
-    let kek_password = get_password(false)?; // false = hide input
+    let kek_password = get_password(false, Some(false));
 
     // Derive KEK using stored parameters
     let kek = key_derivation::id_derive_key(
@@ -503,6 +526,303 @@ pub fn decrypt_private_key(
     .unwrap();
 
     Ok(Secret::new(decrypted))
+}
+
+fn verify_signature(raw: &[u8]) -> Result<bool, Box<dyn std::error::Error>> {
+    let mut cursor = std::io::Cursor::new(raw);
+
+    let mut magic = [0u8; 4];
+    cursor.read_exact(&mut magic)?;
+
+    if &magic != b"SIG1" && &magic != b"SIG2" {
+        return Err(format!(
+            "Bad magic: {:?}",
+            std::str::from_utf8(&magic).unwrap_or("<non-UTF8>")
+        )
+        .into());
+    }
+
+    let mut buf1 = [0u8; 1];
+    cursor.read_exact(&mut buf1)?;
+    let alg_id = buf1[0];
+
+    cursor.read_exact(&mut buf1)?;
+    let key_id_len = buf1[0] as usize;
+    let mut key_id_bytes = vec![0u8; key_id_len];
+    cursor.read_exact(&mut key_id_bytes)?;
+    let key_id = String::from_utf8_lossy(&key_id_bytes).to_string();
+
+    let mut buf2 = [0u8; 2];
+    cursor.read_exact(&mut buf2)?;
+    let filename_len = u16::from_be_bytes(buf2) as usize;
+    let mut filename_bytes = vec![0u8; filename_len];
+    cursor.read_exact(&mut filename_bytes)?;
+
+    let mut buf8 = [0u8; 8];
+    cursor.read_exact(&mut buf8)?;
+    let data_len = u64::from_be_bytes(buf8) as usize;
+
+    let header_len = 4 + 1 + 1 + key_id_len + 2 + filename_len + 8;
+    let data_end = header_len + data_len;
+
+    if raw.len() < data_end {
+        return Err("Blob too short".into());
+    }
+
+    let signed_blob = &raw[..data_end];
+    let signature = &raw[data_end..];
+    let data_hash = hash(signed_blob);
+
+    let pub_key_option = get_unowned_or_owned_public_key(&key_id, false);
+    match pub_key_option {
+        Ok(pub_key) => {
+            asymmetric_crypto::id_verify(
+                alg_id,
+                &pub_key.unwrap().public_key(),
+                &data_hash,
+                signature,
+            )?;
+            Ok(true)
+        }
+        Err(_e) => Ok(false),
+    }
+}
+
+fn strip_signature_blob(raw: &[u8]) -> Result<(Vec<u8>, Vec<u8>), Box<dyn std::error::Error>> {
+    let mut cursor = std::io::Cursor::new(raw);
+
+    let mut magic = [0u8; 4];
+    cursor.read_exact(&mut magic)?;
+
+    if &magic != b"SIG1" && &magic != b"SIG2" {
+        return Err(format!(
+            "Bad magic: {:?}",
+            std::str::from_utf8(&magic).unwrap_or("<non-UTF8>")
+        )
+        .into());
+    }
+
+    let mut buf1 = [0u8; 1];
+    cursor.read_exact(&mut buf1)?; // alg_id
+
+    cursor.read_exact(&mut buf1)?;
+    let key_id_len = buf1[0] as usize;
+    cursor.set_position(cursor.position() + key_id_len as u64);
+
+    let mut buf2 = [0u8; 2];
+    cursor.read_exact(&mut buf2)?;
+    let filename_len = u16::from_be_bytes(buf2) as usize;
+    let mut filename_bytes = vec![0u8; filename_len];
+    cursor.read_exact(&mut filename_bytes)?;
+
+    let mut buf8 = [0u8; 8];
+    cursor.read_exact(&mut buf8)?;
+    let data_len = u64::from_be_bytes(buf8) as usize;
+
+    let header_len = cursor.position() as usize;
+    let data_end = header_len + data_len;
+
+    if raw.len() < data_end {
+        return Err("Blob too short".into());
+    }
+
+    let data = raw[header_len..data_end].to_vec();
+
+    Ok((filename_bytes, data))
+}
+
+fn decrypt_asym_blob(blob: &[u8]) -> Result<(Vec<u8>, Vec<u8>), Box<dyn std::error::Error>> {
+    let mut cursor = std::io::Cursor::new(blob);
+
+    // Check header
+    let mut magic = [0u8; 4];
+    cursor.read_exact(&mut magic)?;
+    if &magic != b"ENC2" {
+        return Err("Bad magic: expected ENC2".into());
+    }
+
+    // Read algorithm IDs
+    let mut buf1 = [0u8; 1];
+    cursor.read_exact(&mut buf1)?;
+    let alg_id = buf1[0];
+    cursor.read_exact(&mut buf1)?;
+    let sym_alg_id = buf1[0];
+
+    // Read key ID
+    let mut buf2 = [0u8; 2];
+    cursor.read_exact(&mut buf2)?;
+    let key_id_len = u16::from_be_bytes(buf2) as usize;
+    let mut key_id_buf = vec![0u8; key_id_len];
+    cursor.read_exact(&mut key_id_buf)?;
+    let key_id = String::from_utf8_lossy(&key_id_buf).to_string();
+
+    // Read filename length
+    cursor.read_exact(&mut buf2)?;
+    let filename_len = u16::from_be_bytes(buf2) as usize;
+
+    // Read ciphertext
+    let mut ciphertext = Vec::new();
+    cursor.read_to_end(&mut ciphertext)?;
+
+    // Retrieve private key from keystore and decrypt
+    let keypair = key_storage::get_key(&key_id)
+        .unwrap()
+        .ok_or("Key entry is None")?;
+
+    let decrypted_priv_key = decrypt_private_key(&keypair)?;
+
+    let plaintext_with_filename = asymmetric_crypto::id_asym_dec(
+        alg_id,
+        &decrypted_priv_key.expose_secret(),
+        &ciphertext,
+        Some(sym_alg_id),
+    )?;
+
+    let total_len = plaintext_with_filename.len();
+    if filename_len > total_len {
+        return Err("Corrupted data: filename length exceeds decrypted content size".into());
+    }
+
+    let filename_start = total_len - filename_len;
+    let filename_bytes = plaintext_with_filename[filename_start..].to_vec();
+    let plaintext = plaintext_with_filename[..filename_start].to_vec();
+
+    Ok((filename_bytes, plaintext))
+}
+
+fn decrypt_sym_blob(blob: &[u8]) -> Result<(Vec<u8>, String), Box<dyn std::error::Error>> {
+    let mut cursor = std::io::Cursor::new(blob);
+
+    let mut magic = [0u8; 4];
+    cursor.read_exact(&mut magic)?;
+    if &magic != b"ENC1" {
+        return Err("Invalid magic bytes".into());
+    }
+
+    let mut kdf_id_buf = [0u8; 1];
+    cursor.read_exact(&mut kdf_id_buf)?;
+    let kdf_id = kdf_id_buf[0];
+
+    let mut aead_id_buf = [0u8; 1];
+    cursor.read_exact(&mut aead_id_buf)?;
+    let aead_id = aead_id_buf[0];
+
+    let mut salt_len_buf = [0u8; 4];
+    cursor.read_exact(&mut salt_len_buf)?;
+    let salt_len = u32::from_be_bytes(salt_len_buf) as usize;
+
+    let mut salt = vec![0u8; salt_len];
+    cursor.read_exact(&mut salt)?;
+
+    // KDF parameters
+    let mut param_bytes = Vec::new();
+    let mut params = HashMap::new();
+
+    match kdf_id {
+        ARGON2_ID => {
+            let mut buf = [0u8; 4];
+            cursor.read_exact(&mut buf)?;
+            param_bytes.extend_from_slice(&buf);
+            params.insert("memory_cost".to_string(), u32::from_be_bytes(buf));
+
+            cursor.read_exact(&mut buf)?;
+            param_bytes.extend_from_slice(&buf);
+            params.insert("time_cost".to_string(), u32::from_be_bytes(buf));
+
+            cursor.read_exact(&mut buf)?;
+            param_bytes.extend_from_slice(&buf);
+            params.insert("parallelism".to_string(), u32::from_be_bytes(buf));
+        }
+        PBKDF2_ID => {
+            let mut buf = [0u8; 4];
+            cursor.read_exact(&mut buf)?;
+            param_bytes.extend_from_slice(&buf);
+            params.insert("iterations".to_string(), u32::from_be_bytes(buf));
+        }
+        _ => return Err(format!("Unknown KDF ID: {}", kdf_id).into()),
+    }
+
+    let mut filename_len_buf = [0u8; 2];
+    cursor.read_exact(&mut filename_len_buf)?;
+    let filename_len = u16::from_be_bytes(filename_len_buf) as usize;
+
+    // Reconstruct AAD
+    let mut aad = Vec::new();
+    aad.extend_from_slice(b"ENC1");
+    aad.push(kdf_id);
+    aad.push(aead_id);
+    aad.extend_from_slice(&salt_len_buf);
+    aad.extend_from_slice(&salt);
+    aad.extend_from_slice(&param_bytes);
+    aad.extend_from_slice(&filename_len_buf);
+
+    // Remaining is ciphertext
+    let mut ciphertext = Vec::new();
+    cursor.read_to_end(&mut ciphertext)?;
+
+    // Derive key
+    let password = get_password(false, Some(true));
+    let key = key_derivation::id_derive_key(kdf_id, password, &salt, SYM_KEY_LEN, &params);
+
+    let plaintext_with_filename =
+        symmetric_encryption::id_decrypt(aead_id, &key.expose_secret(), &ciphertext, Some(&aad))
+            .unwrap();
+
+    let total_len = plaintext_with_filename.len();
+    if filename_len > total_len {
+        return Err("Corrupted data: filename length exceeds decrypted content size".into());
+    }
+
+    let filename_start = total_len - filename_len;
+    let file_data = plaintext_with_filename[..filename_start].to_vec();
+    let filename = String::from_utf8_lossy(&plaintext_with_filename[filename_start..]).into();
+
+    Ok((file_data, filename))
+}
+
+fn encrypt_sym_blob(
+    key_info: &DerivedKeyInfo,
+    aead_id: u8,
+    plaintext: &[u8],
+    filename_len: u16,
+) -> Result<Vec<u8>, Box<dyn Error>> {
+    let nonce = random::get_nonce();
+
+    // === Construct header in memory
+    let mut header = Vec::new();
+    header.extend_from_slice(b"ENC1");
+    header.extend_from_slice(&[key_info.kdf_id, aead_id]);
+    header.extend_from_slice(&(key_info.salt.len() as u32).to_be_bytes());
+    header.extend_from_slice(&key_info.salt);
+
+    match key_info.kdf_id {
+        ARGON2_ID => {
+            header.extend_from_slice(&key_info.params["memory_cost"].to_be_bytes());
+            header.extend_from_slice(&key_info.params["time_cost"].to_be_bytes());
+            header.extend_from_slice(&key_info.params["parallelism"].to_be_bytes());
+        }
+        PBKDF2_ID => {
+            header.extend_from_slice(&key_info.params["iterations"].to_be_bytes());
+        }
+        _ => return Err("Unknown KDF ID".into()),
+    }
+
+    header.extend_from_slice(&filename_len.to_be_bytes());
+
+    // === Encrypt with header as AAD
+    let ciphertext = symmetric_encryption::id_encrypt(
+        aead_id,
+        key_info.key.expose_secret(),
+        &nonce,
+        plaintext,
+        Some(&header),
+    )
+    .unwrap();
+
+    // === Return blob: header || ciphertext
+    let mut blob = header;
+    blob.extend_from_slice(&ciphertext);
+    Ok(blob)
 }
 
 fn main() {
@@ -536,7 +856,12 @@ fn main() {
                 }
             };
 
-            match args.asym {
+            let asym = match &args.input_key {
+                Some(k_id) => get_unowned_or_owned_public_key(&k_id, true).is_ok(),
+                None => false,
+            };
+
+            match asym {
                 true => {
                     // === Asymmetric encryption ===
                     let input_key_id = args
@@ -544,7 +869,9 @@ fn main() {
                         .clone()
                         .expect("Missing input key ID for asymmetric encryption");
 
-                    let key = get_unowned_or_owned_public_key(&input_key_id).unwrap();
+                    let key = get_unowned_or_owned_public_key(&input_key_id, false)
+                        .unwrap()
+                        .unwrap();
 
                     let sym_alg_id = match args.aead {
                         Some(ref a) => utils::alg_name_to_id(a).unwrap(),
@@ -552,11 +879,12 @@ fn main() {
                     };
 
                     let alg_id = key.key_type();
-
+                    // debug
                     let mut blob =
                         build_asym_encrypted_blob(alg_id, sym_alg_id, &key, filename, &plaintext)
                             .expect("Failed to encrypt");
 
+                    // If there is a signing key, sign the data
                     if args.sign_key.is_some() {
                         let sign_key: key_storage::AsymKeyPair =
                             match key_storage::get_key(args.sign_key.unwrap().as_str()).unwrap() {
@@ -568,7 +896,7 @@ fn main() {
                             b"SIG2",
                             sign_key.key_type,
                             &sign_key.id,
-                            filename,
+                            "verified.enc",
                             &blob,
                             &sign_private_key,
                         )
@@ -593,61 +921,41 @@ fn main() {
                                     .ok_or("Key ID not found")
                                     .unwrap();
 
-                            let password = get_password(false).expect("Failed to get password");
+                            let password = get_password(false, Some(true));
                             derive_key_from_stored(&mut sym_key, password)
                                 .expect("Failed to derive key from stored key")
                         }
                         None => generate_key_from_args(&args, &profile),
                     };
 
-                    let key_ref = &key_info.key;
-                    let kdf_id = key_info.kdf_id;
-                    let salt = &key_info.salt;
-                    let params = &key_info.params;
-
                     let aead_id = match args.aead {
                         Some(ref s) => utils::alg_name_to_id(s).unwrap(),
                         None => profile.aead_alg_id,
                     };
 
-                    let nonce = random::get_nonce();
+                    let mut blob = encrypt_sym_blob(&key_info, aead_id, &plaintext, filename_len)
+                        .expect("Failed to construct encrypted blob");
 
-                    // === Construct header in memory
-                    let mut header = Vec::new();
-                    header.extend_from_slice(b"ENC1");
-                    header.extend_from_slice(&[kdf_id, aead_id]);
-                    header.extend_from_slice(&(salt.len() as u32).to_be_bytes());
-                    header.extend_from_slice(salt);
-
-                    match kdf_id {
-                        ARGON2_ID => {
-                            header.extend_from_slice(&params["memory_cost"].to_be_bytes());
-                            header.extend_from_slice(&params["time_cost"].to_be_bytes());
-                            header.extend_from_slice(&params["parallelism"].to_be_bytes());
-                        }
-                        PBKDF2_ID => {
-                            header.extend_from_slice(&params["iterations"].to_be_bytes());
-                        }
-                        _ => panic!("Unknown KDF"),
+                    // If there is a signing key, sign the data
+                    if args.sign_key.is_some() {
+                        let sign_key: key_storage::AsymKeyPair =
+                            match key_storage::get_key(args.sign_key.unwrap().as_str()).unwrap() {
+                                Some(k) => k,
+                                None => panic!("Signing key not found."),
+                            };
+                        let sign_private_key = decrypt_private_key(&sign_key).unwrap();
+                        blob = build_signed_blob(
+                            b"SIG2",
+                            sign_key.key_type,
+                            &sign_key.id,
+                            "verified.enc",
+                            &blob,
+                            &sign_private_key,
+                        )
+                        .unwrap();
                     }
-
-                    header.extend_from_slice(&filename_len.to_be_bytes());
-
-                    // === Encrypt with header as AAD
-                    let ciphertext = symmetric_encryption::id_encrypt(
-                        aead_id,
-                        key_ref.expose_secret(),
-                        &nonce,
-                        &plaintext,
-                        Some(&header),
-                    )
-                    .unwrap();
-
-                    // === Write output file
                     let mut f = File::create(&out_path).expect("Failed to create output file");
-
-                    f.write_all(&header).unwrap();
-                    f.write_all(&ciphertext).unwrap();
+                    f.write_all(&blob).expect("Failed to write ciphertext");
 
                     println!("Symmetric encrypted file written to {}", out_path.display());
                 }
@@ -660,116 +968,39 @@ fn main() {
             let mut f = File::open(&in_path).expect("Failed to open encrypted file");
 
             // === Read magic header ===
-            let mut magic = [0u8; 4];
-            f.read_exact(&mut magic)
-                .expect("Failed to read magic bytes");
+            let mut blob = Vec::new();
+            f.read_to_end(&mut blob).expect("Failed to read input file");
+
+            let mut magic: [u8; 4] = blob[..4].try_into().expect("Failed to get magic bytes");
+
+            if &magic == b"SIG2" {
+                let valid_sig = verify_signature(&blob).expect("signature verfication failed.");
+                if valid_sig {
+                    println!("Signature verified!")
+                } else {
+                    warn_user_or_exit("Unrecognized signature. Would you like to decrypt anyway?");
+                }
+                let (_, encrypted_unsigned_data) = strip_signature_blob(&blob).unwrap();
+                blob = encrypted_unsigned_data;
+                magic = blob[..4]
+                    .try_into()
+                    .expect("Blob too short to contain magic");
+            }
 
             match &magic {
                 b"ENC1" => {
-                    // === Symmetric decryption ===
-                    let mut kdf_id_buf = [0u8; 1];
-                    f.read_exact(&mut kdf_id_buf)
-                        .expect("Failed to read kdf_id");
-                    let kdf_id = kdf_id_buf[0];
-
-                    let mut aead_id_buf = [0u8; 1];
-                    f.read_exact(&mut aead_id_buf)
-                        .expect("Failed to read aead_id");
-                    let aead_id = aead_id_buf[0];
-
-                    let mut salt_len_buf = [0u8; 4];
-                    f.read_exact(&mut salt_len_buf)
-                        .expect("Failed to read salt length");
-                    let salt_len = u32::from_be_bytes(salt_len_buf) as usize;
-
-                    let mut salt = vec![0u8; salt_len];
-                    f.read_exact(&mut salt).expect("Failed to read salt");
-
-                    // === KDF parameters ===
-                    let mut params = HashMap::new();
-                    let mut param_bytes = Vec::new(); // Accumulate bytes for AAD
-                    match kdf_id {
-                        ARGON2_ID => {
-                            let mut buf = [0u8; 4];
-
-                            f.read_exact(&mut buf).expect("Failed to read memory_cost");
-                            param_bytes.extend_from_slice(&buf);
-                            params.insert("memory_cost".to_string(), u32::from_be_bytes(buf));
-
-                            f.read_exact(&mut buf).expect("Failed to read time_cost");
-                            param_bytes.extend_from_slice(&buf);
-                            params.insert("time_cost".to_string(), u32::from_be_bytes(buf));
-
-                            f.read_exact(&mut buf).expect("Failed to read parallelism");
-                            param_bytes.extend_from_slice(&buf);
-                            params.insert("parallelism".to_string(), u32::from_be_bytes(buf));
-                        }
-                        PBKDF2_ID => {
-                            let mut buf = [0u8; 4];
-                            f.read_exact(&mut buf).expect("Failed to read iterations");
-                            param_bytes.extend_from_slice(&buf);
-                            params.insert("iterations".to_string(), u32::from_be_bytes(buf));
-                        }
-                        _ => panic!("Unknown KDF ID: {}", kdf_id),
-                    }
-
-                    let mut filename_len_buf = [0u8; 2];
-                    f.read_exact(&mut filename_len_buf)
-                        .expect("Failed to read filename length");
-                    let filename_len = u16::from_be_bytes(filename_len_buf) as usize;
-
-                    // === Read ciphertext after header
-                    let mut ciphertext = Vec::new();
-                    f.read_to_end(&mut ciphertext)
-                        .expect("Failed to read ciphertext");
-
-                    // === Reconstruct header AAD
-                    let mut aad = Vec::new();
-                    aad.extend_from_slice(b"ENC1");
-                    aad.push(kdf_id);
-                    aad.push(aead_id);
-                    aad.extend_from_slice(&salt_len_buf);
-                    aad.extend_from_slice(&salt);
-                    aad.extend_from_slice(&param_bytes);
-                    aad.extend_from_slice(&filename_len_buf);
-
-                    // === Derive key and decrypt
-                    let password = get_password(false).expect("Failed to get password");
-                    let key = key_derivation::id_derive_key(
-                        kdf_id,
-                        password,
-                        &salt,
-                        SYM_KEY_LEN,
-                        &params,
-                    );
-
-                    let plaintext_with_filename = symmetric_encryption::id_decrypt(
-                        aead_id,
-                        &key.expose_secret(),
-                        &ciphertext,
-                        Some(&aad), // <- pass AAD
-                    )
-                    .expect("Decryption failed");
-
-                    let total_len = plaintext_with_filename.len();
-                    if filename_len > total_len {
-                        panic!("Corrupted data: filename length exceeds decrypted content size");
-                    }
-
-                    let filename_start = total_len - filename_len;
-                    let file_data = &plaintext_with_filename[..filename_start];
-                    let original_filename =
-                        String::from_utf8_lossy(&plaintext_with_filename[filename_start..]);
+                    // === Symmetric decryption entry point ===
+                    let (file_data, filename) = decrypt_sym_blob(&blob).expect("Decryption failed");
 
                     let out_path = match args.output {
                         Some(ref path) => PathBuf::from(path),
-                        None => PathBuf::from(original_filename.to_string()),
+                        None => PathBuf::from(filename),
                     };
 
                     let mut out_file =
                         File::create(&out_path).expect("Failed to create output file");
                     out_file
-                        .write_all(file_data)
+                        .write_all(&file_data)
                         .expect("Failed to write decrypted data");
 
                     println!(
@@ -778,81 +1009,8 @@ fn main() {
                     );
                 }
                 b"ENC2" => {
-                    // === Asymmetric decryption ===
-                    let mut alg_id_buf = [0u8; 1];
-                    f.read_exact(&mut alg_id_buf)
-                        .expect("Failed to read alg_id");
-                    let alg_id = alg_id_buf[0];
-
-                    let mut sym_alg_id_buf = [0u8; 1];
-                    f.read_exact(&mut sym_alg_id_buf)
-                        .expect("Failed to read sym_alg_id");
-                    let sym_alg_id = sym_alg_id_buf[0];
-
-                    let mut key_id_len_buf = [0u8; 2];
-                    f.read_exact(&mut key_id_len_buf)
-                        .expect("Failed to read key ID length");
-                    let key_id_len = u16::from_be_bytes(key_id_len_buf) as usize;
-
-                    let mut key_id_buf = vec![0u8; key_id_len];
-                    f.read_exact(&mut key_id_buf)
-                        .expect("Failed to read key ID");
-                    let key_id = String::from_utf8_lossy(&key_id_buf).to_string();
-
-                    let mut filename_len_buf = [0u8; 2];
-                    f.read_exact(&mut filename_len_buf)
-                        .expect("Failed to read filename length");
-                    let filename_len = u16::from_be_bytes(filename_len_buf) as usize;
-
-                    let mut ciphertext = Vec::new();
-                    f.read_to_end(&mut ciphertext)
-                        .expect("Failed to read ciphertext");
-
-                    // === Retrieve key from keystore ===
-                    let keypair: key_storage::AsymKeyPair = key_storage::get_key(&key_id)
-                        .unwrap()
-                        .ok_or("Key ID not found in keystore")
-                        .unwrap();
-
-                    // === Prompt for password and derive KEK ===
-                    let kek_password = get_password(false).expect("Failed to get password");
-                    let kek = key_derivation::id_derive_key(
-                        keypair.kek_kdf,
-                        kek_password,
-                        &keypair.kek_salt,
-                        SYM_KEY_LEN,
-                        &keypair.kek_params,
-                    );
-
-                    // === Decrypt the stored private key ===
-                    let decrypted_priv_key = Secret::new(
-                        symmetric_encryption::id_decrypt(
-                            keypair.kek_aead,
-                            &kek.expose_secret(),
-                            &keypair.private_key,
-                            None,
-                        )
-                        .expect("Failed to decrypt private key"),
-                    );
-
-                    // === Proceed with asymmetric decryption ===
-                    let plaintext_with_filename = asymmetric_crypto::id_asym_dec(
-                        alg_id,
-                        &decrypted_priv_key.expose_secret(),
-                        &ciphertext,
-                        Some(sym_alg_id),
-                    )
-                    .expect("Decryption failed");
-
-                    let total_len = plaintext_with_filename.len();
-                    if filename_len > total_len {
-                        panic!("Corrupted data: filename length exceeds decrypted content size");
-                    }
-
-                    let filename_start = total_len - filename_len;
-                    let file_data = &plaintext_with_filename[..filename_start];
-                    let original_filename =
-                        String::from_utf8_lossy(&plaintext_with_filename[filename_start..]);
+                    let (filename_bytes, plaintext) = decrypt_asym_blob(&blob).unwrap();
+                    let original_filename = String::from_utf8_lossy(&filename_bytes);
 
                     let out_path = match args.output {
                         Some(ref path) => PathBuf::from(path),
@@ -862,7 +1020,7 @@ fn main() {
                     let mut out_file =
                         File::create(&out_path).expect("Failed to create output file");
                     out_file
-                        .write_all(file_data)
+                        .write_all(&plaintext)
                         .expect("Failed to write decrypted data");
 
                     println!(
@@ -933,7 +1091,7 @@ fn main() {
             }
 
             // Proceed with key generation
-            let password = get_password(true).expect("Failed to get password.");
+            let password = get_password(true, None);
 
             match &args.asymmetric {
                 Some(alg) => {
@@ -1006,7 +1164,7 @@ fn main() {
                 .unwrap()
                 .ok_or("Key ID not found in keystore")
                 .unwrap();
-            let kek_password = get_password(false).unwrap();
+            let kek_password = get_password(false, Some(false));
             let kek = key_derivation::id_derive_key(
                 keypair.kek_kdf,
                 kek_password,
@@ -1014,7 +1172,7 @@ fn main() {
                 SYM_KEY_LEN,
                 &keypair.kek_params,
             );
-            let decrypted_priv = Secret::new(
+            let decrypted_private_key = Secret::new(
                 symmetric_encryption::id_decrypt(
                     keypair.kek_aead,
                     &kek.expose_secret(),
@@ -1024,103 +1182,40 @@ fn main() {
                 .unwrap(),
             );
 
-            let alg_id = keypair.key_type;
-            let key_id_bytes = args.key_id.as_bytes();
-            let filename_bytes = filename.as_bytes();
+            let blob = build_signed_blob(
+                b"SIG1",
+                keypair.key_type,
+                args.key_id.as_str(),
+                filename,
+                &data,
+                &decrypted_private_key,
+            )
+            .expect("Signing failed.");
 
-            // === Build header ===
-            let mut header = Vec::new();
-            header.extend_from_slice(b"SIG1");
-            header.push(alg_id);
-            header.push(key_id_bytes.len() as u8);
-            header.extend_from_slice(key_id_bytes);
-            header.extend_from_slice(&(filename_bytes.len() as u16).to_be_bytes());
-            header.extend_from_slice(filename_bytes);
-            header.extend_from_slice(&(data.len() as u64).to_be_bytes()); // DATA_LEN
-
-            // === Sign header+data ===
-            let mut signed_blob = header.clone();
-            signed_blob.extend_from_slice(&data);
-            let data_hash = hash(&signed_blob);
-            let signature =
-                asymmetric_crypto::id_sign(alg_id, &decrypted_priv.expose_secret(), &data_hash)
-                    .expect("Signing failed");
-
-            // === Write out: header, data, then signature ===
+            // Write out blob
             let sig_path = input_path.with_extension("sig");
             let mut f = File::create(&sig_path).expect("Failed to create output file");
-            f.write_all(&header).unwrap();
-            f.write_all(&data).unwrap();
-            f.write_all(&signature).unwrap();
+            f.write_all(&blob).unwrap();
 
             println!("Signed file written to '{}'", sig_path.display());
         }
         cli::Command::Verify(args) => {
             cli::validate_args(&args);
-
             let sig_path = PathBuf::from(&args.input);
             let raw = read_file(sig_path.to_str().unwrap()).unwrap();
-            let mut cursor = std::io::Cursor::new(&raw);
 
-            // === Parse header ===
-            let mut magic = [0u8; 4];
-            cursor.read_exact(&mut magic).unwrap();
-            if &magic != b"SIG1" {
-                panic!("Bad magic");
+            if !verify_signature(&raw).unwrap() {
+                panic!("Signature verification failed");
             }
-
-            let mut buf1 = [0u8; 1];
-            cursor.read_exact(&mut buf1).unwrap();
-            let alg_id = buf1[0];
-
-            cursor.read_exact(&mut buf1).unwrap();
-            let key_id_len = buf1[0] as usize;
-            let mut key_id_bytes = vec![0u8; key_id_len];
-            cursor.read_exact(&mut key_id_bytes).unwrap();
-            let key_id = String::from_utf8_lossy(&key_id_bytes);
-
-            let mut buf2 = [0u8; 2];
-            cursor.read_exact(&mut buf2).unwrap();
-            let filename_len = u16::from_be_bytes(buf2) as usize;
-            let mut filename_bytes = vec![0u8; filename_len];
-            cursor.read_exact(&mut filename_bytes).unwrap();
-            let original_filename = String::from_utf8_lossy(&filename_bytes);
-
-            let mut buf8 = [0u8; 8];
-            cursor.read_exact(&mut buf8).unwrap();
-            let data_len = u64::from_be_bytes(buf8) as usize;
-
-            let header_len = 4 + 1 + 1 + key_id_len + 2 + filename_len + 8;
-
-            // === Extract data & signature ===
-            let data_start = header_len;
-            let data_end = data_start + data_len;
-            if raw.len() < data_end {
-                panic!("File too short for declared data length");
-            }
-            let data = &raw[data_start..data_end];
-            let signature = &raw[data_end..];
-
-            // === Reconstruct signed blob ===
-            let signed_blob = &raw[..data_end];
-            let data_hash = hash(&signed_blob);
-
-            // === Load public key ===
-            let pub_key = get_unowned_or_owned_public_key(&key_id)
-                .unwrap()
-                .public_key();
-
-            // === Verify ===
-            asymmetric_crypto::id_verify(alg_id, &pub_key, &data_hash, signature)
-                .expect("Signature verification failed");
 
             println!("Signature verified.");
 
-            // optionally write unsigned file:
             if !args.only_verify {
+                let (filename_bytes, data) = strip_signature_blob(&raw).unwrap();
+                let original_filename = String::from_utf8_lossy(&filename_bytes);
                 let out = sig_path.with_file_name(original_filename.to_string());
                 let mut f = File::create(&out).unwrap();
-                f.write_all(data).unwrap();
+                f.write_all(&data).unwrap();
                 println!("Unsigned data written to '{}'", out.display());
             }
         }

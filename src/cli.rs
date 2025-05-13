@@ -508,6 +508,9 @@ pub struct ImportKeyArgs {
 impl Validatable for ImportKeyArgs {
     fn validate(&self) -> Result<(), Box<dyn Error>> {
         validate_path(self.input_file.as_str())?;
+        if !self.input_file.ends_with(".pub") {
+            return Err("Input file must have a .pub extension".into());
+        }
         Ok(())
     }
 }

@@ -34,18 +34,27 @@ pub mod utils;
 
 use clap::Parser;
 
-/// Prompts the user to enter a password securely, optionally verifying it by double entry.
+/// Prompts the user for a password, optionally verifying it by re-entry.
 ///
-/// This function reads a password from stdin without echoing it to the terminal.
-/// If `verify` is `true`, the user is prompted to re-enter the password for confirmation.
-/// If the entries do not match, an error is returned.
+/// This function displays a context-specific prompt based on whether the key
+/// is symmetric, asymmetric, or unspecified. It securely reads the password
+/// input from the user and, if verification is enabled, prompts for re-entry
+/// to ensure they match. If the verification fails, the program exits with
+/// an error message.
 ///
 /// # Arguments
-/// * `verify` - If `true`, requires the user to enter the password twice for verification.
+/// * `verify` - Whether to prompt the user to re-enter the password for verification.
+/// * `is_sym_key` - Optional flag to indicate if the password is for a symmetric key
+///   (`Some(true)`), asymmetric key (`Some(false)`), or unspecified (`None`).
 ///
 /// # Returns
-/// * `Ok(Secret<String>)` containing the password if input (and verification) succeeded.
-/// * `Err` if reading fails or the passwords do not match.
+/// * `Secret<String>` - The password securely wrapped in a `Secret`.
+///
+/// # Panics
+/// Panics if reading the password fails due to an I/O error.
+///
+/// # Exits
+/// Exits the process with status 0 if password verification fails.
 fn get_password(verify: bool, is_sym_key: Option<bool>) -> Secret<String> {
     match is_sym_key {
         Some(true) => println!("Enter password for symmetric key: "),
@@ -116,6 +125,22 @@ pub struct DerivedKeyInfo {
     pub salt: Vec<u8>,
     pub params: HashMap<String, u32>,
 }
+/// Derives a symmetric encryption key using CLI arguments and user profile settings.
+///
+/// This function selects a key derivation function (KDF) based on the CLI arguments
+/// or defaults to the user profile's configured KDF. It prompts the user for a password
+/// (with verification), generates a random salt, and derives the encryption key using
+/// the specified KDF and profile parameters.
+///
+/// # Arguments
+/// * `args` - Command-line arguments that may specify a custom KDF name.
+/// * `profile` - The user's cryptographic profile containing default KDF ID and parameters.
+///
+/// # Returns
+/// * `DerivedKeyInfo` - Struct containing the derived key, salt, KDF ID, and parameters.
+///
+/// # Panics
+/// Panics if the specified or resolved KDF ID is unsupported, or if password input fails.
 pub fn generate_key_from_args(
     args: &cli::EncryptArgs,
     profile: &user::UserProfile,
@@ -148,19 +173,21 @@ pub fn generate_key_from_args(
     }
 }
 
-/// Derives a symmetric encryption key based on CLI input and user profile settings.
+/// Derives a symmetric encryption key from stored metadata and user-provided password.
 ///
-/// This function prompts the user for a password (with optional verification),
-/// selects the appropriate key derivation function (KDF) based on CLI arguments
-/// or a fallback user profile, and derives a key using a randomly generated salt
-/// and the specified parameters.
+/// This function uses stored key metadata (including KDF ID, salt, and parameters)
+/// to derive a key from the user’s password. It verifies the derived key against a
+/// stored hash to ensure correctness and increments the key usage counter if verified.
+/// The updated key metadata is then persisted back to storage.
 ///
 /// # Arguments
-/// * `args` - CLI arguments provided by the user, possibly containing a custom KDF name.
-/// * `profile` - The user's cryptographic profile containing default KDF and parameters.
+/// * `sym_key` - A mutable reference to the stored symmetric key metadata.
+/// * `password` - The user-provided password, securely wrapped in a `Secret`.
 ///
 /// # Returns
-/// * `DerivedKeyInfo` - Struct containing the derived key, salt, KDF ID, and parameters.
+/// * `Result<DerivedKeyInfo, String>` - On success, returns a struct with the derived
+///    key, KDF ID, salt, and parameters. Returns an error if verification fails or
+///    storing the key metadata fails.
 ///
 /// # Panics
 /// Panics if an unsupported KDF ID is specified or password input fails.
@@ -357,6 +384,21 @@ fn read_file(path: &str) -> Result<Vec<u8>, Box<dyn Error>> {
     Ok(contents)
 }
 
+/// Displays a warning message and prompts the user for confirmation before continuing.
+///
+/// This function prints the provided message followed by a `[y/N]` prompt. If the user
+/// does not respond with `"y"` (case-insensitive), the program prints a cancellation
+/// message and exits with status code 0. Used to prevent accidental continuation of
+/// sensitive or destructive operations.
+///
+/// # Arguments
+/// * `message` - The warning message to display before prompting the user.
+///
+/// # Exits
+/// Exits the process with status 0 if the user does not confirm with `"y"`.
+///
+/// # Panics
+/// Panics if writing to stdout or reading from stdin fails.
 fn warn_user_or_exit(message: &str) {
     print!("{} [y/N]: ", message);
     io::stdout().flush().unwrap();
@@ -370,7 +412,11 @@ fn warn_user_or_exit(message: &str) {
     }
 }
 
-// Helpful to get either an owned or unowned key
+/// Represents a public key entry that may be either owned or unowned by the user.
+///
+/// This enum abstracts over both unowned public keys (e.g., imported from external sources)
+/// and fully owned asymmetric key pairs. It provides unified access to common key metadata
+/// such as the key ID, type, and public key bytes.
 enum PublicKeyEntry {
     Unowned(key_storage::UnownedPublicKey),
     Owned(key_storage::AsymKeyPair),
@@ -397,6 +443,28 @@ impl PublicKeyEntry {
     }
 }
 
+/// Attempts to retrieve a public key by ID, checking both unowned and owned key stores.
+///
+/// This function first looks for an unowned public key matching the provided ID. If not found,
+/// it optionally prompts the user (unless `quiet` is true) before attempting to load an owned
+/// asymmetric key pair with the same ID. Returns a wrapped `PublicKeyEntry` if a matching key
+/// is found, or `Ok(None)` if no matching key is available or the type is incompatible.
+///
+/// # Arguments
+/// * `key_id` - The identifier of the public key to retrieve.
+/// * `quiet` - If `true`, suppresses user interaction and warnings when falling back to owned keys.
+///
+/// # Returns
+/// * `Result<Option<PublicKeyEntry>, Box<dyn Error>>` -
+///   - `Ok(Some(PublicKeyEntry))` if a matching key is found.
+///   - `Ok(None)` if no key matches or a type mismatch occurs.
+///   - `Err` if a non-recoverable error occurs during key retrieval.
+///
+/// # Panics
+/// Panics if the unowned key check fails unexpectedly.
+///
+/// # Exits
+/// Exits the process if the user declines to fall back to owned keys (when `quiet` is `false`).
 fn get_unowned_or_owned_public_key(
     key_id: &str,
     quiet: bool,
@@ -433,6 +501,31 @@ fn get_unowned_or_owned_public_key(
     Ok(Some(key_entry))
 }
 
+/// Builds a signed blob consisting of a header, file information, and the data, signed by a private key.
+///
+/// This function constructs a "blob" that contains metadata (such as key ID, algorithm ID, and filename)
+/// and data (such as the content to be signed), then signs the resulting structure with the provided private key.
+/// The output is a vector that contains the concatenated header, data, and signature.
+///
+/// # Arguments
+/// * `magic` - A 4-byte static magic value to prefix the blob.
+/// * `alg_id` - The identifier of the signing algorithm to use.
+/// * `key_id` - The identifier of the key used for signing.
+/// * `filename` - The name of the file being signed.
+/// * `data` - The data to be signed, which could be a file or message content.
+/// * `decrypted_priv` - The decrypted private key (wrapped securely in a `Secret`) used for signing.
+///
+/// # Returns
+/// * `Result<Vec<u8>, Box<dyn Error>>` - A result containing the signed blob as a `Vec<u8>`. The blob includes:
+///    - A header with metadata about the key and data.
+///    - The data itself.
+///    - A signature of the concatenated header and data.
+///
+/// # Panics
+/// Panics if the signing process fails (e.g., if the private key cannot be used to sign the data).
+///
+/// # Errors
+/// Returns an error if the signing operation encounters an issue, such as key mismatch or cryptographic failure.
 fn build_signed_blob(
     magic: &'static [u8; 4],
     alg_id: u8,
@@ -466,6 +559,26 @@ fn build_signed_blob(
     Ok(signed_blob)
 }
 
+/// Constructs an encrypted blob containing a file's metadata and encrypted content using asymmetric encryption.
+///
+/// This function creates an encrypted blob consisting of a header with metadata (algorithm IDs, key ID, filename length),
+/// followed by the actual ciphertext, which is the result of encrypting the provided plaintext using asymmetric encryption.
+/// The symmetric algorithm ID is included for future decryption, and the blob is signed by the public key associated with the given key entry.
+///
+/// # Arguments
+/// * `alg_id` - The identifier of the asymmetric encryption algorithm to use.
+/// * `sym_alg_id` - The identifier of the symmetric encryption algorithm (used optionally in encryption).
+/// * `key` - A `PublicKeyEntry` containing the public key and related metadata for encryption.
+/// * `filename` - The name of the file or resource being encrypted.
+/// * `plaintext` - The data (in bytes) to be encrypted.
+///
+/// # Returns
+/// * `Result<Vec<u8>, Box<dyn std::error::Error>>` - A result containing the encrypted blob as a `Vec<u8>`. The blob includes:
+///    - A header consisting of magic bytes, algorithm IDs, key ID length, key ID, and filename length.
+///    - The encrypted content (ciphertext).
+///
+/// # Errors
+/// Returns an error if the encryption process fails, such as an invalid public key or encryption algorithm error.
 fn build_asym_encrypted_blob(
     alg_id: u8,
     sym_alg_id: u8,
@@ -477,9 +590,11 @@ fn build_asym_encrypted_blob(
 
     let data_to_encrypt = plaintext.to_vec();
 
+    // encrypt the data
     let ciphertext =
         asymmetric_crypto::id_asym_enc(alg_id, &pub_key, &data_to_encrypt, Some(sym_alg_id))?;
 
+    // collects info for header
     let key_id = key.id();
     let key_id_bytes = key_id.as_bytes();
     let key_id_len = key_id_bytes.len() as u16;
@@ -487,7 +602,7 @@ fn build_asym_encrypted_blob(
 
     let mut blob = Vec::new();
 
-    // === Header: MAGIC | ALG_ID | SYM_ALG_ID | KEY_ID_LEN | KEY_ID | FILENAME_LEN ===
+    // Header: MAGIC | ALG_ID | SYM_ALG_ID | KEY_ID_LEN | KEY_ID | FILENAME_LEN
     blob.extend_from_slice(b"ENC2");
     blob.push(alg_id);
     blob.push(sym_alg_id);
@@ -495,12 +610,27 @@ fn build_asym_encrypted_blob(
     blob.extend_from_slice(key_id_bytes);
     blob.extend_from_slice(&filename_len.to_be_bytes());
 
-    // === Ciphertext ===
+    // add ciphertext to header
     blob.extend_from_slice(&ciphertext);
 
     Ok(blob)
 }
 
+/// Decrypts a private key using a key encryption key (KEK) derived from a password.
+///
+/// This function prompts the user for a password, derives a key encryption key (KEK) based on the provided password
+/// and stored parameters, and uses that KEK to decrypt the stored private key associated with the given asymmetric key pair.
+///
+/// # Arguments
+/// * `keypair` - The asymmetric key pair containing the key encryption key (KEK) parameters, salt, and the encrypted private key.
+///
+/// # Returns
+/// * `Result<Secret<Vec<u8>>, Box<dyn Error>>` - A result containing the decrypted private key as a `Secret<Vec<u8>>` wrapped in a `Result`.
+///   - If successful, it contains the decrypted private key.
+///
+/// # Errors
+/// Returns an error if the password derivation, decryption, or any other operation fails.
+/// Specifically, it could fail if the key derivation or symmetric decryption process fails.
 fn decrypt_private_key(
     keypair: &key_storage::AsymKeyPair,
 ) -> Result<Secret<Vec<u8>>, Box<dyn Error>> {
@@ -528,6 +658,25 @@ fn decrypt_private_key(
     Ok(Secret::new(decrypted))
 }
 
+/// Verifies the signature of a signed blob.
+///
+/// This function checks the validity of a signature associated with a blob of data.
+/// It starts by reading and parsing the header to ensure the integrity of the data, followed by checking the signature using the appropriate public key.
+///
+/// # Arguments
+/// * `raw` - A byte slice representing the raw signed data. This includes both the header and the signature.
+///
+/// # Returns
+/// * `Result<bool, Box<dyn std::error::Error>>` - A result containing a boolean:
+///   - `true` if the signature is successfully verified,
+///   - `false` if no matching public key is found or signature verification fails.
+///
+/// # Errors
+/// Returns an error if the blob's magic is invalid, the header is not properly formatted, or there is an issue during signature verification.
+/// Possible errors include:
+///   - Invalid magic value in the header,
+///   - Inconsistent blob length compared to the header's data length,
+///   - Failure to find or verify the public key for the signature.
 fn verify_signature(raw: &[u8]) -> Result<bool, Box<dyn std::error::Error>> {
     let mut cursor = std::io::Cursor::new(raw);
 
@@ -542,6 +691,7 @@ fn verify_signature(raw: &[u8]) -> Result<bool, Box<dyn std::error::Error>> {
         .into());
     }
 
+    // Parse header
     let mut buf1 = [0u8; 1];
     cursor.read_exact(&mut buf1)?;
     let alg_id = buf1[0];
@@ -569,6 +719,7 @@ fn verify_signature(raw: &[u8]) -> Result<bool, Box<dyn std::error::Error>> {
         return Err("Blob too short".into());
     }
 
+    // Fully parsed blocks here
     let signed_blob = &raw[..data_end];
     let signature = &raw[data_end..];
     let data_hash = hash(signed_blob);
@@ -588,9 +739,29 @@ fn verify_signature(raw: &[u8]) -> Result<bool, Box<dyn std::error::Error>> {
     }
 }
 
+/// Strips the signature blob into its components: filename and data.
+///
+/// This function extracts the `filename` and the signed `data` from a signed data blob.
+/// It starts by parsing the header to retrieve the necessary information such as algorithm ID, key ID, filename length, and data length,
+/// then it returns the filename and the actual signed data.
+///
+/// # Arguments
+/// * `raw` - A byte slice representing the raw signed data blob, which contains a header followed by the signature data.
+///
+/// # Returns
+/// * `Result<(Vec<u8>, Vec<u8>), Box<dyn std::error::Error>>` - A tuple containing:
+///   - `Vec<u8>` representing the filename bytes (in the form of UTF-8),
+///   - `Vec<u8>` representing the actual signed data.
+///
+/// # Errors
+/// Returns an error if the blob has an invalid magic, malformed header, or the data length doesn't match the expected size of the blob.
+/// Possible errors include:
+///   - Invalid magic value in the header (should be either `SIG1` or `SIG2`),
+///   - Inconsistent blob length compared to the header's data length.
 fn strip_signature_blob(raw: &[u8]) -> Result<(Vec<u8>, Vec<u8>), Box<dyn std::error::Error>> {
     let mut cursor = std::io::Cursor::new(raw);
 
+    // Magic should be some SIGi
     let mut magic = [0u8; 4];
     cursor.read_exact(&mut magic)?;
 
@@ -602,6 +773,7 @@ fn strip_signature_blob(raw: &[u8]) -> Result<(Vec<u8>, Vec<u8>), Box<dyn std::e
         .into());
     }
 
+    // parse header
     let mut buf1 = [0u8; 1];
     cursor.read_exact(&mut buf1)?; // alg_id
 
@@ -622,6 +794,7 @@ fn strip_signature_blob(raw: &[u8]) -> Result<(Vec<u8>, Vec<u8>), Box<dyn std::e
     let header_len = cursor.position() as usize;
     let data_end = header_len + data_len;
 
+    // Error if the blob is to small
     if raw.len() < data_end {
         return Err("Blob too short".into());
     }
@@ -631,6 +804,26 @@ fn strip_signature_blob(raw: &[u8]) -> Result<(Vec<u8>, Vec<u8>), Box<dyn std::e
     Ok((filename_bytes, data))
 }
 
+/// Decrypts an asymmetric encrypted blob, extracting the filename and the plaintext data.
+///
+/// This function first validates the provided encrypted blob by checking the header and extracting necessary metadata.
+/// It then uses the appropriate private key to decrypt the encrypted content and extracts both the filename and the plaintext data.
+///
+/// # Arguments
+/// * `blob` - A byte slice representing the encrypted data blob, which includes the header, encryption metadata,
+///   and the ciphertext that needs to be decrypted.
+///
+/// # Returns
+/// * `Result<(Vec<u8>, Vec<u8>), Box<dyn std::error::Error>>` - A tuple containing:
+///   - `Vec<u8>` representing the filename bytes (in UTF-8),
+///   - `Vec<u8>` representing the decrypted plaintext data.
+///
+/// # Errors
+/// Returns an error in the following cases:
+///   - Invalid magic value in the header (should be `ENC2`),
+///   - Error reading the algorithm IDs or key ID,
+///   - Failure to retrieve the private key from the key storage,
+///   - Decryption failure, including if the filename length exceeds the decrypted content size.
 fn decrypt_asym_blob(blob: &[u8]) -> Result<(Vec<u8>, Vec<u8>), Box<dyn std::error::Error>> {
     let mut cursor = std::io::Cursor::new(blob);
 
@@ -690,6 +883,27 @@ fn decrypt_asym_blob(blob: &[u8]) -> Result<(Vec<u8>, Vec<u8>), Box<dyn std::err
     Ok((filename_bytes, plaintext))
 }
 
+/// Decrypts a symmetric encrypted blob, extracting the file data and the filename.
+///
+/// This function starts by validating the header of the provided encrypted blob and reading metadata, including key derivation
+/// parameters, the encryption salt, and the filename length. It then derives a symmetric key using the provided KDF parameters,
+/// decrypts the ciphertext, and extracts the file data and filename.
+///
+/// # Arguments
+/// * `blob` - A byte slice representing the encrypted data blob, which includes the header, key derivation parameters,
+///   salt, ciphertext, and filename.
+///
+/// # Returns
+/// * `Result<(Vec<u8>, String), Box<dyn std::error::Error>>` - A tuple containing:
+///   - `Vec<u8>` representing the decrypted file data,
+///   - `String` representing the filename (UTF-8 encoded).
+///
+/// # Errors
+/// Returns an error in the following cases:
+///   - Invalid magic value in the header (should be `ENC1`),
+///   - Failure in reading or processing KDF parameters or salt,
+///   - Decryption failure,
+///   - Corrupted data, where the filename length exceeds the size of the decrypted content.
 fn decrypt_sym_blob(blob: &[u8]) -> Result<(Vec<u8>, String), Box<dyn std::error::Error>> {
     let mut cursor = std::io::Cursor::new(blob);
 
@@ -780,6 +994,29 @@ fn decrypt_sym_blob(blob: &[u8]) -> Result<(Vec<u8>, String), Box<dyn std::error
     Ok((file_data, filename))
 }
 
+/// Encrypts a symmetric blob with additional metadata in the header.
+///
+/// This function generates a structured blob starting with a header that contains information
+/// about the key derivation, encryption parameters, and a filename length. It then encrypts
+/// the provided plaintext using symmetric encryption with authenticated encryption with
+/// associated data (AEAD). The header and ciphertext are concatenated into the final encrypted blob.
+///
+/// # Arguments
+/// * `key_info` - A reference to a `DerivedKeyInfo` structure containing key derivation information
+///   (e.g., KDF ID, salt, and associated parameters).
+/// * `aead_id` - An identifier for the AEAD algorithm to use for encryption.
+/// * `plaintext` - The data to be encrypted.
+/// * `filename_len` - The length of the filename that will be included in the header.
+///
+/// # Returns
+/// * `Result<Vec<u8>, Box<dyn Error>>` - The encrypted blob consisting of the header and ciphertext.
+///   - The header includes metadata like KDF ID, AEAD ID, salt, and filename length.
+///   - The ciphertext is the result of encrypting the `plaintext` using the derived key.
+///
+/// # Errors
+/// Returns an error if:
+///   - The KDF ID is unknown (i.e., neither `ARGON2_ID` nor `PBKDF2_ID`).
+///   - There is a failure in encryption.
 fn encrypt_sym_blob(
     key_info: &DerivedKeyInfo,
     aead_id: u8,
@@ -829,6 +1066,7 @@ fn main() {
     let cli = cli::Cli::parse();
 
     match cli.command {
+        // Handles all symmetric and asymmetric encryption; also can sign encrypted blobs
         cli::Command::Encrypt(args) => {
             cli::validate_args(&args);
             let profile = user::init_profile().unwrap();
@@ -838,11 +1076,11 @@ fn main() {
             let filename_bytes = filename.as_bytes();
             let filename_len = filename_bytes.len() as u16;
 
-            // === Read and prepare plaintext ===
+            // Read plaintext ===
             let mut plaintext = read_file(input_path.to_str().unwrap()).unwrap();
             plaintext.extend_from_slice(filename_bytes); // Append filename for recovery
 
-            // === Determine output path ===
+            // Determine output path
             let out_path = match args.output {
                 Some(ref path) => {
                     let mut p = PathBuf::from(path);
@@ -856,6 +1094,7 @@ fn main() {
                 }
             };
 
+            // Determines if the given key is sym or asym; no key routes to sym
             let asym = match &args.input_key {
                 Some(k_id) => get_unowned_or_owned_public_key(&k_id, true).is_ok(),
                 None => false,
@@ -863,7 +1102,7 @@ fn main() {
 
             match asym {
                 true => {
-                    // === Asymmetric encryption ===
+                    // Asymmetric encryption
                     let input_key_id = args
                         .input_key
                         .clone()
@@ -879,7 +1118,7 @@ fn main() {
                     };
 
                     let alg_id = key.key_type();
-                    // debug
+
                     let mut blob =
                         build_asym_encrypted_blob(alg_id, sym_alg_id, &key, filename, &plaintext)
                             .expect("Failed to encrypt");
@@ -912,7 +1151,9 @@ fn main() {
                 }
 
                 false => {
-                    // === Symmetric encryption ===
+                    // Symmetric encryption
+
+                    // Either get a key from the store or generate a single use one
                     let key_info = match args.input_key {
                         Some(ref input_key_id) => {
                             let mut sym_key: key_storage::SymKey =
@@ -967,12 +1208,14 @@ fn main() {
             let in_path = PathBuf::from(args.input.clone().unwrap());
             let mut f = File::open(&in_path).expect("Failed to open encrypted file");
 
-            // === Read magic header ===
+            // Read blob and magic
             let mut blob = Vec::new();
             f.read_to_end(&mut blob).expect("Failed to read input file");
 
             let mut magic: [u8; 4] = blob[..4].try_into().expect("Failed to get magic bytes");
 
+            // Check if data is signed and encrypted
+            // if it is => verify/strip the signature
             if &magic == b"SIG2" {
                 let valid_sig = verify_signature(&blob).expect("signature verfication failed.");
                 if valid_sig {
@@ -988,30 +1231,12 @@ fn main() {
             }
 
             match &magic {
-                b"ENC1" => {
-                    // === Symmetric decryption entry point ===
-                    let (file_data, filename) = decrypt_sym_blob(&blob).expect("Decryption failed");
-
-                    let out_path = match args.output {
-                        Some(ref path) => PathBuf::from(path),
-                        None => PathBuf::from(filename),
-                    };
-
-                    let mut out_file =
-                        File::create(&out_path).expect("Failed to create output file");
-                    out_file
-                        .write_all(&file_data)
-                        .expect("Failed to write decrypted data");
-
-                    println!(
-                        "Decryption complete. Output written to {}",
-                        out_path.display()
-                    );
-                }
                 b"ENC2" => {
+                    // Asymmetric decryption
                     let (filename_bytes, plaintext) = decrypt_asym_blob(&blob).unwrap();
                     let original_filename = String::from_utf8_lossy(&filename_bytes);
 
+                    // Get out path and write to file
                     let out_path = match args.output {
                         Some(ref path) => PathBuf::from(path),
                         None => PathBuf::from(original_filename.to_string()),
@@ -1028,11 +1253,31 @@ fn main() {
                         out_path.display()
                     );
                 }
+                b"ENC1" => {
+                    // Symmetric decryption
+                    let (file_data, filename) = decrypt_sym_blob(&blob).expect("Decryption failed");
+                    // Get out path and write file
+                    let out_path = match args.output {
+                        Some(ref path) => PathBuf::from(path),
+                        None => PathBuf::from(filename),
+                    };
 
+                    let mut out_file =
+                        File::create(&out_path).expect("Failed to create output file");
+                    out_file
+                        .write_all(&file_data)
+                        .expect("Failed to write decrypted data");
+
+                    println!(
+                        "Decryption complete. Output written to {}",
+                        out_path.display()
+                    );
+                }
+                // The magic is unrecognized
                 _ => panic!("Unknown encryption format"),
             };
         }
-
+        // Handles changed to default parameters
         cli::Command::Profile(args) => {
             cli::validate_args(&args);
             let id = args
@@ -1040,13 +1285,15 @@ fn main() {
                 .clone()
                 .unwrap_or_else(|| "Default".to_string());
 
+            // Either make a new profile or get the existing one to edit
             let mut profile = match user::get_profile(&id).unwrap() {
                 Some(p) => p,
                 None => user::get_new_profile(id.clone()),
             };
 
+            // find the thing to update
             match args.update_field.as_str() {
-                "aead_alg_id" => match utils::alg_name_to_id(&args.value) {
+                "aead" => match utils::alg_name_to_id(&args.value) {
                     Ok(id) => profile.aead_alg_id = id,
                     Err(e) => {
                         eprintln!("Invalid aead_alg_id: {}", e);
@@ -1054,7 +1301,7 @@ fn main() {
                     }
                 },
 
-                "kdf_id" => match utils::alg_name_to_id(&args.value) {
+                "kdf" => match utils::alg_name_to_id(&args.value) {
                     Ok(id) => profile.kdf_id = id,
                     Err(e) => {
                         eprintln!("Invalid kdf_id: {}", e);
@@ -1071,6 +1318,7 @@ fn main() {
                 }
             }
 
+            // Set the new profile
             user::set_profile(&profile).expect("Failed to save updated profile");
             println!("Updated profile '{}': {:#?}", profile.id, profile);
         }
@@ -1083,6 +1331,7 @@ fn main() {
         cli::Command::KeyGen(args) => {
             cli::validate_args(&args);
 
+            // Avoid overwriting keys
             if does_key_exist(args.id.clone()).unwrap() {
                 warn_user_or_exit(&format!(
                     "There is already a key with the id: {}. Overwrite?",
@@ -1114,9 +1363,11 @@ fn main() {
             if !args.unowned {
                 key_storage::list_keys().expect("Failed to list keys");
             } else {
+                // Can list keys from others
                 key_storage::list_unowned_public_keys().expect("Failed to list keys")
             }
         }
+        // Erases option to erase all keys and data
         cli::Command::Wipe(mut args) => {
             if !args.wipe_keys && !args.wipe_profiles {
                 args.wipe_keys = true;
@@ -1152,6 +1403,7 @@ fn main() {
             }
         }
 
+        // signs any data and creates a .sig file
         cli::Command::Sign(args) => {
             cli::validate_args(&args);
 
@@ -1159,11 +1411,12 @@ fn main() {
             let filename = input_path.file_name().unwrap().to_str().unwrap();
             let data = read_file(input_path.to_str().unwrap()).unwrap();
 
-            // load & decrypt private key
+            // load/decrypt private key
             let keypair: key_storage::AsymKeyPair = key_storage::get_key(&args.key_id)
                 .unwrap()
                 .ok_or("Key ID not found in keystore")
                 .unwrap();
+            // Compute the kek
             let kek_password = get_password(false, Some(false));
             let kek = key_derivation::id_derive_key(
                 keypair.kek_kdf,
@@ -1182,6 +1435,7 @@ fn main() {
                 .unwrap(),
             );
 
+            // sign the blob
             let blob = build_signed_blob(
                 b"SIG1",
                 keypair.key_type,
@@ -1199,17 +1453,20 @@ fn main() {
 
             println!("Signed file written to '{}'", sig_path.display());
         }
+        // Verify .sig files and optionally strip the sig data
         cli::Command::Verify(args) => {
             cli::validate_args(&args);
             let sig_path = PathBuf::from(&args.input);
             let raw = read_file(sig_path.to_str().unwrap()).unwrap();
 
             if !verify_signature(&raw).unwrap() {
-                panic!("Signature verification failed");
+                println!("Signature verification failed");
+                exit(0);
             }
 
             println!("Signature verified.");
 
+            // Stip blob and create new file
             if !args.only_verify {
                 let (filename_bytes, data) = strip_signature_blob(&raw).unwrap();
                 let original_filename = String::from_utf8_lossy(&filename_bytes);
@@ -1219,6 +1476,7 @@ fn main() {
                 println!("Unsigned data written to '{}'", out.display());
             }
         }
+        // Creates a .pub of one of your keypairs that others can import
         cli::Command::ExportKey(args) => {
             let key = key_storage::export_key(args.key_id.as_str()).unwrap();
             let mut key_file = Vec::new();
@@ -1235,6 +1493,7 @@ fn main() {
             println!("Public key written to '{}'", output_path.display());
         }
 
+        // Reads in .pub files into your key store
         cli::Command::ImportKey(args) => {
             cli::validate_args(&args);
             let key_path = PathBuf::from(&args.input_file);

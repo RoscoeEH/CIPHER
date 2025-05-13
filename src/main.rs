@@ -17,6 +17,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::fs::File;
 use std::io::{self, Read, Write};
+use std::panic;
 use std::path::PathBuf;
 use std::process::exit;
 
@@ -1010,6 +1011,12 @@ fn strip_signature_blob(raw: &[u8]) -> Result<(Vec<u8>, Vec<u8>), Box<dyn std::e
 }
 
 fn main() {
+    // Simpler panics for production
+    if !cfg!(debug_assertions) {
+        panic::set_hook(Box::new(|_info| {
+            eprintln!("Something went wrong, please check your inputs.");
+        }));
+    }
     let cli = cli::Cli::parse();
 
     match cli.command {
@@ -1062,7 +1069,7 @@ fn main() {
 
                     let key = get_unowned_or_owned_public_key(&input_key_id, false)
                         .unwrap()
-                        .unwrap();
+                        .expect("No key found.");
 
                     let sym_alg_id = match args.aead {
                         Some(ref a) => utils::alg_name_to_id(a).unwrap(),

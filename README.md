@@ -298,7 +298,7 @@ Encrypted files may be wrapped in a signature using the `.enc` extension. These 
 ## Build Notes
 Build production executable with:
 ```sh
-cargo build --release
+cargo run --release
 ```
 
 ## License

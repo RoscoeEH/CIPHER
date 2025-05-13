@@ -183,6 +183,7 @@ pub enum Command {
     #[clap(name = "list-profiles")]
     ListProfiles,
 
+    /// Generate new keys
     KeyGen(KeyGenArgs),
 
     /// List all existing profiles
@@ -196,13 +197,17 @@ pub enum Command {
     #[clap(name = "delete-key")]
     DeleteKey(DeleteKeyArgs),
 
+    /// Sign files
     Sign(SignArgs),
 
+    /// Verify signatures
     Verify(VerifyArgs),
 
+    /// Export public keys
     #[clap(name = "export")]
     ExportKey(ExportKeyArgs),
 
+    /// Import public keys
     #[clap(name = "import")]
     ImportKey(ImportKeyArgs),
 }
@@ -372,7 +377,7 @@ impl Validatable for ProfileArgs {
                 Ok(())
             }
 
-            "kdf_id" => {
+            "kdf" => {
                 if KDF_NAMES.contains(&self.value.as_str()) {
                     Ok(())
                 } else {
@@ -380,7 +385,7 @@ impl Validatable for ProfileArgs {
                 }
             }
 
-            "aead_alg_id" => {
+            "aead" => {
                 if AEAD_NAMES.contains(&self.value.as_str()) {
                     Ok(())
                 } else {

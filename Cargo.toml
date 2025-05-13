@@ -1,6 +1,6 @@
 [package]
 name = "cipher"
-version = "1.0.1"
+version = "1.0.3"
 edition = "2024"
 
 [dependencies]
@@ -34,3 +34,6 @@ chrono = "0.4"
 
 [dev-dependencies]
 hex-literal = "0.4"
+
+[profile.release]
+panic = "abort"

@@ -13,7 +13,9 @@
 
 use crate::constants::*;
 use chrono::{DateTime, Utc};
+use sha2::{Digest, Sha256};
 use std::error::Error;
+use std::process::exit;
 
 /// Converts a human-readable algorithm name into its corresponding algorithm ID.
 ///
@@ -78,4 +80,36 @@ pub fn datetime_to_u64(datetime: DateTime<Utc>) -> u64 {
 pub fn u64_to_datetime(ts: u64) -> DateTime<Utc> {
     // Safe as ts is from chrono timestamps, and this returns Result
     DateTime::<Utc>::from_timestamp(ts as i64, 0).expect("Invalid UNIX timestamp value")
+}
+
+/// Parses a string into a `u32`, exiting the program with an error message if parsing fails.
+///
+/// # Arguments
+/// * `field` - The name of the field being parsed, used in the error message.
+/// * `value` - The string value to parse into a `u32`.
+///
+/// # Returns
+/// * The parsed `u32` value.
+///
+/// # Panics
+/// This function does not panic, but it will terminate the program with a message
+/// if parsing fails.
+pub fn parse_u32_or_exit(field: &str, value: &str) -> u32 {
+    value.parse::<u32>().unwrap_or_else(|_| {
+        eprintln!("Invalid number for '{}'", field);
+        exit(0);
+    })
+}
+
+/// Computes the SHA-256 hash of the input data.
+///
+/// # Arguments
+/// * `data` - A byte slice containing the data to hash.
+///
+/// # Returns
+/// * A `Vec<u8>` containing the 32-byte SHA-256 digest.
+pub fn hash(data: &[u8]) -> Vec<u8> {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    hasher.finalize().to_vec()
 }

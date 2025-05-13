@@ -320,14 +320,14 @@ pub fn delete_key(id: &str) -> Result<(), Box<dyn Error>> {
 ///
 /// # Notes
 /// Errors from individual key lookups are ignored (assumed as "not found").
-pub fn does_key_exist(id: String) -> Result<bool, Box<dyn Error>> {
+pub fn does_key_exist(id: &str) -> Result<bool, Box<dyn Error>> {
     // Check if a symmetric or asymmetric key with the same ID already exists
-    let sym_key_exists = match get_key::<SymKey>(id.as_str()) {
+    let sym_key_exists = match get_key::<SymKey>(id) {
         Ok(opt) => opt.is_some(),
         Err(_e) => false,
     };
 
-    let asym_key_exists = match get_key::<AsymKeyPair>(id.as_str()) {
+    let asym_key_exists = match get_key::<AsymKeyPair>(id) {
         Ok(opt) => opt.is_some(),
         Err(_e) => false,
     };
@@ -335,6 +335,19 @@ pub fn does_key_exist(id: String) -> Result<bool, Box<dyn Error>> {
 }
 
 // === Key I/0 operations ===
+
+/// Represents a public key that has been imported but is not owned by the user.
+///
+/// This struct is used to store metadata about unowned keys, typically for the
+/// purpose of verifying signatures or encrypting data to recipients.
+///
+/// # Fields
+///
+/// * `id` - A human-readable key ID (e.g., fingerprint or hash).
+/// * `internal_id` - Internal UUID or handle used for storage lookup.
+/// * `key_type` - An identifier for the key algorithm (e.g., RSA, Ed25519).
+/// * `public_key` - Raw public key bytes.
+/// * `created` - UNIX timestamp (seconds since epoch) of when the key was created or imported.
 #[derive(Serialize, Deserialize, Debug)]
 pub struct UnownedPublicKey {
     pub id: String,
@@ -350,6 +363,31 @@ impl HasId for UnownedPublicKey {
     }
 }
 
+/// Exports a stored asymmetric key as a serialized public key file.
+///
+/// This function retrieves the keypair with the given ID and converts it
+/// into an `UnownedPublicKey` struct, which is then serialized using `bincode`.
+/// The resulting bytes can be written to disk or shared with others.
+///
+/// # Arguments
+///
+/// * `id` - The ID of the keypair to export. This must match an owned key ID.
+///
+/// # Returns
+///
+/// * `Ok(Vec<u8>)` - The serialized public key data, ready to be saved to a `.pub` file.
+/// * `Err(Box<dyn Error>)` - If the key is not found or serialization fails.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The key does not exist.
+/// - Serialization fails (although `unwrap` is used here, so that would panic instead).
+///
+/// # Note
+///
+/// The `internal_id` field is set to the keypair's actual ID, while the `id`
+/// field may be overridden to avoid conflicts during import.
 pub fn export_key(id: &str) -> Result<Vec<u8>, Box<dyn Error>> {
     let keypair: AsymKeyPair = match get_key(id).unwrap() {
         Some(k) => k,
@@ -366,6 +404,31 @@ pub fn export_key(id: &str) -> Result<Vec<u8>, Box<dyn Error>> {
     Ok(serialized)
 }
 
+/// Imports a public key into the database.
+///
+/// This function deserializes a `UnownedPublicKey` from the provided byte slice,
+/// optionally overrides its ID, and stores it in the `PUBLIC_KEY_STORE`.
+///
+/// # Arguments
+///
+/// * `key_vec` - A byte slice containing the serialized `UnownedPublicKey` (e.g., from a `.pub` file).
+/// * `alt_id` - An optional alternate ID to override the key's default ID. Useful for avoiding ID collisions.
+///
+/// # Returns
+///
+/// * `Ok(())` - If the key is successfully deserialized and stored.
+/// * `Err(Box<dyn std::error::Error>)` - If deserialization or database storage fails.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - Deserialization fails (invalid or corrupted `.pub` file).
+/// - The database fails to store the key.
+///
+/// # Note
+///
+/// The `internal_id` is preserved from the original key, and only the `id`
+/// is overridden if `alt_id` is provided.
 pub fn import_key(
     key_vec: &[u8],
     alt_id: Option<String>,
@@ -388,6 +451,26 @@ pub fn import_key(
     Ok(())
 }
 
+/// Retrieves an unowned public key from the public key store by its ID.
+///
+/// This function looks up the given `id` in the `PUBLIC_KEY_STORE`, and if found,
+/// deserializes the stored bytes into an `UnownedPublicKey` struct.
+///
+/// # Arguments
+///
+/// * `id` - The ID of the unowned public key to retrieve.
+///
+/// # Returns
+///
+/// * `Ok(Some(UnownedPublicKey))` - If a key with the given ID is found and deserialized successfully.
+/// * `Ok(None)` - If no key with the given ID exists in the store.
+/// * `Err(Box<dyn std::error::Error>)` - If deserialization or database access fails.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The underlying database fails during the lookup.
+/// - The stored data cannot be deserialized into an `UnownedPublicKey`.
 pub fn get_unowned_public_key(
     id: &str,
 ) -> Result<Option<UnownedPublicKey>, Box<dyn std::error::Error>> {
@@ -402,6 +485,28 @@ pub fn get_unowned_public_key(
     }
 }
 
+/// Lists all unowned public keys currently stored in the public key store.
+///
+/// This function iterates through the `PUBLIC_KEY_STORE`, attempts to deserialize
+/// each value as an `UnownedPublicKey`, and prints key details such as:
+/// - ID
+/// - Algorithm type
+/// - Creation timestamp
+/// - Public key length
+///
+/// The creation timestamp is formatted as a human-readable date/time using `u64_to_datetime`,
+/// and the key type is converted to a string using `alg_id_to_name`.
+///
+/// # Returns
+///
+/// * `Ok(())` if the listing completes without error.
+/// * `Err(Box<dyn std::error::Error>)` if any RocksDB or deserialization errors occur.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - Any entry fails to deserialize into an `UnownedPublicKey`.
+/// - The RocksDB iterator encounters an error during iteration.
 pub fn list_unowned_public_keys() -> Result<(), Box<dyn std::error::Error>> {
     let db = PUBLIC_KEY_STORE.lock().unwrap();
     let iter = db.iterator(rocksdb::IteratorMode::Start);
@@ -483,11 +588,32 @@ pub fn delete_public_key(id: &str) -> Result<(), Box<dyn Error>> {
 ///
 /// # Notes
 /// Errors from individual key lookups are ignored (assumed as "not found").
-pub fn does_public_key_exist(id: String) -> Result<bool, Box<dyn Error>> {
-    let key_exists = match get_unowned_public_key(id.as_str()) {
+pub fn does_public_key_exist(id: &str) -> Result<bool, Box<dyn Error>> {
+    let key_exists = match get_unowned_public_key(id) {
         Ok(opt) => opt.is_some(),
         Err(_e) => false,
     };
 
     Ok(key_exists)
+}
+
+/// Extracts the ID from a serialized `UnownedPublicKey`.
+///
+/// This function deserializes the provided byte slice into an `UnownedPublicKey`
+/// struct and returns the value of its `id` field.
+///
+/// # Arguments
+/// * `key_vec` - A byte slice containing a bincode-serialized `UnownedPublicKey`.
+///
+/// # Returns
+/// * `Result<String, Box<dyn Error>>` - Returns `Ok(id)` if deserialization succeeds,
+///   or an `Err` if the input is not a valid serialized `UnownedPublicKey`.
+///
+/// # Errors
+/// Returns an error if the input cannot be deserialized using `bincode`.
+pub fn get_id_from_serialized_public_key(
+    key_vec: &[u8],
+) -> Result<String, Box<dyn std::error::Error>> {
+    let key: UnownedPublicKey = bincode::deserialize(key_vec)?;
+    Ok(key.id)
 }

@@ -13,7 +13,6 @@
 
 use rpassword::read_password;
 use secrecy::{ExposeSecret, Secret};
-use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs::File;
@@ -33,6 +32,8 @@ pub mod user;
 pub mod utils;
 
 use clap::Parser;
+
+// === flow and input helpers ===
 
 /// Prompts the user for a password, optionally verifying it by re-entry.
 ///
@@ -76,37 +77,54 @@ fn get_password(verify: bool, is_sym_key: Option<bool>) -> Secret<String> {
     password
 }
 
-/// Parses a string into a `u32`, exiting the program with an error message if parsing fails.
+/// Reads the entire contents of a file into a byte vector.
+///
+/// Opens the file at the specified path and reads all bytes into memory.
+/// Useful for loading binary or text data as raw bytes.
 ///
 /// # Arguments
-/// * `field` - The name of the field being parsed, used in the error message.
-/// * `value` - The string value to parse into a `u32`.
+/// * `path` - A string slice representing the path to the file.
 ///
 /// # Returns
-/// * The parsed `u32` value.
-///
-/// # Panics
-/// This function does not panic, but it will terminate the program with a message
-/// if parsing fails.
-fn parse_u32_or_exit(field: &str, value: &str) -> u32 {
-    value.parse::<u32>().unwrap_or_else(|_| {
-        eprintln!("Invalid number for '{}'", field);
-        std::process::exit(1);
-    })
+/// * `Result<Vec<u8>, Box<dyn Error>>` - Returns a `Vec<u8>` with the file contents on success,
+///   or an error boxed as `Box<dyn Error>` if the file cannot be opened or read.
+fn read_file(path: &str) -> Result<Vec<u8>, Box<dyn Error>> {
+    let mut file = File::open(path)?;
+    let mut contents = Vec::new();
+    file.read_to_end(&mut contents)?;
+
+    Ok(contents)
 }
 
-/// Computes the SHA-256 hash of the input data.
+/// Displays a warning message and prompts the user for confirmation before continuing.
+///
+/// This function prints the provided message followed by a `[y/N]` prompt. If the user
+/// does not respond with `"y"` (case-insensitive), the program prints a cancellation
+/// message and exits with status code 0. Used to prevent accidental continuation of
+/// sensitive or destructive operations.
 ///
 /// # Arguments
-/// * `data` - A byte slice containing the data to hash.
+/// * `message` - The warning message to display before prompting the user.
 ///
-/// # Returns
-/// * A `Vec<u8>` containing the 32-byte SHA-256 digest.
-fn hash(data: &[u8]) -> Vec<u8> {
-    let mut hasher = Sha256::new();
-    hasher.update(data);
-    hasher.finalize().to_vec()
+/// # Exits
+/// Exits the process with status 0 if the user does not confirm with `"y"`.
+///
+/// # Panics
+/// Panics if writing to stdout or reading from stdin fails.
+fn warn_user_or_exit(message: &str) {
+    print!("{} [y/N]: ", message);
+    io::stdout().flush().unwrap();
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).unwrap();
+
+    if !input.trim().eq_ignore_ascii_case("y") {
+        println!("Cancelled");
+        exit(0);
+    }
 }
+
+// === Key use helpers ===
 
 /// Contains metadata and material for a derived cryptographic key.
 ///
@@ -203,7 +221,7 @@ pub fn derive_key_from_stored(
         &sym_key.derivation_params,
     );
 
-    let derived_hash = Sha256::digest(&derived.expose_secret());
+    let derived_hash = utils::hash(&derived.expose_secret());
     if derived_hash[..] != sym_key.verification_hash[..] {
         return Err("Key verification failed".into());
     }
@@ -328,60 +346,13 @@ fn gen_sym_key(
         salt: salt_vec,
         derivation_method_id: profile.kdf_id,
         derivation_params: params.clone(),
-        verification_hash: hash(&key.expose_secret()),
+        verification_hash: utils::hash(&key.expose_secret()),
         created: utils::now_as_u64(),
         use_count: 0,
     };
 
     key_storage::store_key(&key_to_store).expect("Failed to store key");
     Ok(())
-}
-
-/// Reads the entire contents of a file into a byte vector.
-///
-/// Opens the file at the specified path and reads all bytes into memory.
-/// Useful for loading binary or text data as raw bytes.
-///
-/// # Arguments
-/// * `path` - A string slice representing the path to the file.
-///
-/// # Returns
-/// * `Result<Vec<u8>, Box<dyn Error>>` - Returns a `Vec<u8>` with the file contents on success,
-///   or an error boxed as `Box<dyn Error>` if the file cannot be opened or read.
-fn read_file(path: &str) -> Result<Vec<u8>, Box<dyn Error>> {
-    let mut file = File::open(path)?;
-    let mut contents = Vec::new();
-    file.read_to_end(&mut contents)?;
-
-    Ok(contents)
-}
-
-/// Displays a warning message and prompts the user for confirmation before continuing.
-///
-/// This function prints the provided message followed by a `[y/N]` prompt. If the user
-/// does not respond with `"y"` (case-insensitive), the program prints a cancellation
-/// message and exits with status code 0. Used to prevent accidental continuation of
-/// sensitive or destructive operations.
-///
-/// # Arguments
-/// * `message` - The warning message to display before prompting the user.
-///
-/// # Exits
-/// Exits the process with status 0 if the user does not confirm with `"y"`.
-///
-/// # Panics
-/// Panics if writing to stdout or reading from stdin fails.
-fn warn_user_or_exit(message: &str) {
-    print!("{} [y/N]: ", message);
-    io::stdout().flush().unwrap();
-
-    let mut input = String::new();
-    io::stdin().read_line(&mut input).unwrap();
-
-    if !input.trim().eq_ignore_ascii_case("y") {
-        println!("Cancelled");
-        exit(0);
-    }
 }
 
 /// Represents a public key entry that may be either owned or unowned by the user.
@@ -473,63 +444,49 @@ fn get_unowned_or_owned_public_key(
     Ok(Some(key_entry))
 }
 
-/// Builds a signed blob consisting of a header, file information, and the data, signed by a private key.
+/// Decrypts a private key using a key encryption key (KEK) derived from a password.
 ///
-/// This function constructs a "blob" that contains metadata (such as key ID, algorithm ID, and filename)
-/// and data (such as the content to be signed), then signs the resulting structure with the provided private key.
-/// The output is a vector that contains the concatenated header, data, and signature.
+/// This function prompts the user for a password, derives a key encryption key (KEK) based on the provided password
+/// and stored parameters, and uses that KEK to decrypt the stored private key associated with the given asymmetric key pair.
 ///
 /// # Arguments
-/// * `magic` - A 4-byte static magic value to prefix the blob.
-/// * `alg_id` - The identifier of the signing algorithm to use.
-/// * `key_id` - The identifier of the key used for signing.
-/// * `filename` - The name of the file being signed.
-/// * `data` - The data to be signed, which could be a file or message content.
-/// * `decrypted_priv` - The decrypted private key (wrapped securely in a `Secret`) used for signing.
+/// * `keypair` - The asymmetric key pair containing the key encryption key (KEK) parameters, salt, and the encrypted private key.
 ///
 /// # Returns
-/// * `Result<Vec<u8>, Box<dyn Error>>` - A result containing the signed blob as a `Vec<u8>`. The blob includes:
-///    - A header with metadata about the key and data.
-///    - The data itself.
-///    - A signature of the concatenated header and data.
-///
-/// # Panics
-/// Panics if the signing process fails (e.g., if the private key cannot be used to sign the data).
+/// * `Result<Secret<Vec<u8>>, Box<dyn Error>>` - A result containing the decrypted private key as a `Secret<Vec<u8>>` wrapped in a `Result`.
+///   - If successful, it contains the decrypted private key.
 ///
 /// # Errors
-/// Returns an error if the signing operation encounters an issue, such as key mismatch or cryptographic failure.
-fn build_signed_blob(
-    magic: &'static [u8; 4],
-    alg_id: u8,
-    key_id: &str,
-    filename: &str,
-    data: &[u8],
-    decrypted_priv: &secrecy::Secret<Vec<u8>>,
-) -> Result<Vec<u8>, Box<dyn Error>> {
-    let key_id_bytes = key_id.as_bytes();
-    let filename_bytes = filename.as_bytes();
+/// Returns an error if the password derivation, decryption, or any other operation fails.
+/// Specifically, it could fail if the key derivation or symmetric decryption process fails.
+fn decrypt_private_key(
+    keypair: &key_storage::AsymKeyPair,
+) -> Result<Secret<Vec<u8>>, Box<dyn Error>> {
+    // Prompt for password
+    let kek_password = get_password(false, Some(false));
 
-    // Build header
-    let mut header = Vec::new();
-    header.extend_from_slice(magic);
-    header.push(alg_id);
-    header.push(key_id_bytes.len() as u8);
-    header.extend_from_slice(key_id_bytes);
-    header.extend_from_slice(&(filename_bytes.len() as u16).to_be_bytes());
-    header.extend_from_slice(filename_bytes);
-    header.extend_from_slice(&(data.len() as u64).to_be_bytes()); // DATA_LEN
+    // Derive KEK using stored parameters
+    let kek = key_derivation::id_derive_key(
+        keypair.kek_kdf,
+        kek_password,
+        &keypair.kek_salt,
+        SYM_KEY_LEN,
+        &keypair.kek_params,
+    );
 
-    // Sign header+data
-    let mut signed_blob = header.clone();
-    signed_blob.extend_from_slice(data);
-    let data_hash = hash(&signed_blob);
-    let signature = asymmetric_crypto::id_sign(alg_id, decrypted_priv.expose_secret(), &data_hash)
-        .expect("Signing failed");
+    // Decrypt the stored private key
+    let decrypted = symmetric_encryption::id_decrypt(
+        keypair.kek_aead,
+        &kek.expose_secret(),
+        &keypair.private_key,
+        None,
+    )
+    .unwrap();
 
-    // Output full blob
-    signed_blob.extend_from_slice(&signature);
-    Ok(signed_blob)
+    Ok(Secret::new(decrypted))
 }
+
+// === Encryption helpers ===
 
 /// Constructs an encrypted blob containing a file's metadata and encrypted content using asymmetric encryption.
 ///
@@ -586,194 +543,6 @@ fn build_asym_encrypted_blob(
     blob.extend_from_slice(&ciphertext);
 
     Ok(blob)
-}
-
-/// Decrypts a private key using a key encryption key (KEK) derived from a password.
-///
-/// This function prompts the user for a password, derives a key encryption key (KEK) based on the provided password
-/// and stored parameters, and uses that KEK to decrypt the stored private key associated with the given asymmetric key pair.
-///
-/// # Arguments
-/// * `keypair` - The asymmetric key pair containing the key encryption key (KEK) parameters, salt, and the encrypted private key.
-///
-/// # Returns
-/// * `Result<Secret<Vec<u8>>, Box<dyn Error>>` - A result containing the decrypted private key as a `Secret<Vec<u8>>` wrapped in a `Result`.
-///   - If successful, it contains the decrypted private key.
-///
-/// # Errors
-/// Returns an error if the password derivation, decryption, or any other operation fails.
-/// Specifically, it could fail if the key derivation or symmetric decryption process fails.
-fn decrypt_private_key(
-    keypair: &key_storage::AsymKeyPair,
-) -> Result<Secret<Vec<u8>>, Box<dyn Error>> {
-    // Prompt for password
-    let kek_password = get_password(false, Some(false));
-
-    // Derive KEK using stored parameters
-    let kek = key_derivation::id_derive_key(
-        keypair.kek_kdf,
-        kek_password,
-        &keypair.kek_salt,
-        SYM_KEY_LEN,
-        &keypair.kek_params,
-    );
-
-    // Decrypt the stored private key
-    let decrypted = symmetric_encryption::id_decrypt(
-        keypair.kek_aead,
-        &kek.expose_secret(),
-        &keypair.private_key,
-        None,
-    )
-    .unwrap();
-
-    Ok(Secret::new(decrypted))
-}
-
-/// Verifies the signature of a signed blob.
-///
-/// This function checks the validity of a signature associated with a blob of data.
-/// It starts by reading and parsing the header to ensure the integrity of the data, followed by checking the signature using the appropriate public key.
-///
-/// # Arguments
-/// * `raw` - A byte slice representing the raw signed data. This includes both the header and the signature.
-///
-/// # Returns
-/// * `Result<bool, Box<dyn std::error::Error>>` - A result containing a boolean:
-///   - `true` if the signature is successfully verified,
-///   - `false` if no matching public key is found or signature verification fails.
-///
-/// # Errors
-/// Returns an error if the blob's magic is invalid, the header is not properly formatted, or there is an issue during signature verification.
-/// Possible errors include:
-///   - Invalid magic value in the header,
-///   - Inconsistent blob length compared to the header's data length,
-///   - Failure to find or verify the public key for the signature.
-fn verify_signature(raw: &[u8]) -> Result<bool, Box<dyn std::error::Error>> {
-    let mut cursor = std::io::Cursor::new(raw);
-
-    let mut magic = [0u8; 4];
-    cursor.read_exact(&mut magic)?;
-
-    if &magic != b"SIG1" && &magic != b"SIG2" {
-        return Err(format!(
-            "Bad magic: {:?}",
-            std::str::from_utf8(&magic).unwrap_or("<non-UTF8>")
-        )
-        .into());
-    }
-
-    // Parse header
-    let mut buf1 = [0u8; 1];
-    cursor.read_exact(&mut buf1)?;
-    let alg_id = buf1[0];
-
-    cursor.read_exact(&mut buf1)?;
-    let key_id_len = buf1[0] as usize;
-    let mut key_id_bytes = vec![0u8; key_id_len];
-    cursor.read_exact(&mut key_id_bytes)?;
-    let key_id = String::from_utf8_lossy(&key_id_bytes).to_string();
-
-    let mut buf2 = [0u8; 2];
-    cursor.read_exact(&mut buf2)?;
-    let filename_len = u16::from_be_bytes(buf2) as usize;
-    let mut filename_bytes = vec![0u8; filename_len];
-    cursor.read_exact(&mut filename_bytes)?;
-
-    let mut buf8 = [0u8; 8];
-    cursor.read_exact(&mut buf8)?;
-    let data_len = u64::from_be_bytes(buf8) as usize;
-
-    let header_len = 4 + 1 + 1 + key_id_len + 2 + filename_len + 8;
-    let data_end = header_len + data_len;
-
-    if raw.len() < data_end {
-        return Err("Blob too short".into());
-    }
-
-    // Fully parsed blocks here
-    let signed_blob = &raw[..data_end];
-    let signature = &raw[data_end..];
-    let data_hash = hash(signed_blob);
-
-    let pub_key_option = get_unowned_or_owned_public_key(&key_id, false);
-    match pub_key_option {
-        Ok(pub_key) => {
-            asymmetric_crypto::id_verify(
-                alg_id,
-                &pub_key.unwrap().public_key(),
-                &data_hash,
-                signature,
-            )?;
-            Ok(true)
-        }
-        Err(_e) => Ok(false),
-    }
-}
-
-/// Strips the signature blob into its components: filename and data.
-///
-/// This function extracts the `filename` and the signed `data` from a signed data blob.
-/// It starts by parsing the header to retrieve the necessary information such as algorithm ID, key ID, filename length, and data length,
-/// then it returns the filename and the actual signed data.
-///
-/// # Arguments
-/// * `raw` - A byte slice representing the raw signed data blob, which contains a header followed by the signature data.
-///
-/// # Returns
-/// * `Result<(Vec<u8>, Vec<u8>), Box<dyn std::error::Error>>` - A tuple containing:
-///   - `Vec<u8>` representing the filename bytes (in the form of UTF-8),
-///   - `Vec<u8>` representing the actual signed data.
-///
-/// # Errors
-/// Returns an error if the blob has an invalid magic, malformed header, or the data length doesn't match the expected size of the blob.
-/// Possible errors include:
-///   - Invalid magic value in the header (should be either `SIG1` or `SIG2`),
-///   - Inconsistent blob length compared to the header's data length.
-fn strip_signature_blob(raw: &[u8]) -> Result<(Vec<u8>, Vec<u8>), Box<dyn std::error::Error>> {
-    let mut cursor = std::io::Cursor::new(raw);
-
-    // Magic should be some SIGi
-    let mut magic = [0u8; 4];
-    cursor.read_exact(&mut magic)?;
-
-    if &magic != b"SIG1" && &magic != b"SIG2" {
-        return Err(format!(
-            "Bad magic: {:?}",
-            std::str::from_utf8(&magic).unwrap_or("<non-UTF8>")
-        )
-        .into());
-    }
-
-    // parse header
-    let mut buf1 = [0u8; 1];
-    cursor.read_exact(&mut buf1)?; // alg_id
-
-    cursor.read_exact(&mut buf1)?;
-    let key_id_len = buf1[0] as usize;
-    cursor.set_position(cursor.position() + key_id_len as u64);
-
-    let mut buf2 = [0u8; 2];
-    cursor.read_exact(&mut buf2)?;
-    let filename_len = u16::from_be_bytes(buf2) as usize;
-    let mut filename_bytes = vec![0u8; filename_len];
-    cursor.read_exact(&mut filename_bytes)?;
-
-    let mut buf8 = [0u8; 8];
-    cursor.read_exact(&mut buf8)?;
-    let data_len = u64::from_be_bytes(buf8) as usize;
-
-    let header_len = cursor.position() as usize;
-    let data_end = header_len + data_len;
-
-    // Error if the blob is to small
-    if raw.len() < data_end {
-        return Err("Blob too short".into());
-    }
-
-    let data = raw[header_len..data_end].to_vec();
-
-    Ok((filename_bytes, data))
 }
 
 /// Decrypts an asymmetric encrypted blob, extracting the filename and the plaintext data.
@@ -1018,7 +787,7 @@ fn encrypt_sym_blob(
 
     header.extend_from_slice(&filename_len.to_be_bytes());
 
-    // === Encrypt with header as AAD
+    // Encrypt with header as AAD
     let ciphertext = symmetric_encryption::id_encrypt(
         aead_id,
         key_info.key.expose_secret(),
@@ -1028,10 +797,216 @@ fn encrypt_sym_blob(
     )
     .unwrap();
 
-    // === Return blob: header || ciphertext
+    // Return blob: header || ciphertext
     let mut blob = header;
     blob.extend_from_slice(&ciphertext);
     Ok(blob)
+}
+
+// === Signature helpers ===
+
+/// Builds a signed blob consisting of a header, file information, and the data, signed by a private key.
+///
+/// This function constructs a "blob" that contains metadata (such as key ID, algorithm ID, and filename)
+/// and data (such as the content to be signed), then signs the resulting structure with the provided private key.
+/// The output is a vector that contains the concatenated header, data, and signature.
+///
+/// # Arguments
+/// * `magic` - A 4-byte static magic value to prefix the blob.
+/// * `alg_id` - The identifier of the signing algorithm to use.
+/// * `key_id` - The identifier of the key used for signing.
+/// * `filename` - The name of the file being signed.
+/// * `data` - The data to be signed, which could be a file or message content.
+/// * `decrypted_priv` - The decrypted private key (wrapped securely in a `Secret`) used for signing.
+///
+/// # Returns
+/// * `Result<Vec<u8>, Box<dyn Error>>` - A result containing the signed blob as a `Vec<u8>`. The blob includes:
+///    - A header with metadata about the key and data.
+///    - The data itself.
+///    - A signature of the concatenated header and data.
+///
+/// # Panics
+/// Panics if the signing process fails (e.g., if the private key cannot be used to sign the data).
+///
+/// # Errors
+/// Returns an error if the signing operation encounters an issue, such as key mismatch or cryptographic failure.
+fn build_signed_blob(
+    magic: &'static [u8; 4],
+    alg_id: u8,
+    key_id: &str,
+    filename: &str,
+    data: &[u8],
+    decrypted_priv: &secrecy::Secret<Vec<u8>>,
+) -> Result<Vec<u8>, Box<dyn Error>> {
+    let key_id_bytes = key_id.as_bytes();
+    let filename_bytes = filename.as_bytes();
+
+    // Build header
+    let mut header = Vec::new();
+    header.extend_from_slice(magic);
+    header.push(alg_id);
+    header.push(key_id_bytes.len() as u8);
+    header.extend_from_slice(key_id_bytes);
+    header.extend_from_slice(&(filename_bytes.len() as u16).to_be_bytes());
+    header.extend_from_slice(filename_bytes);
+    header.extend_from_slice(&(data.len() as u64).to_be_bytes()); // DATA_LEN
+
+    // Sign header+data
+    let mut signed_blob = header.clone();
+    signed_blob.extend_from_slice(data);
+    let data_hash = utils::hash(&signed_blob);
+    let signature = asymmetric_crypto::id_sign(alg_id, decrypted_priv.expose_secret(), &data_hash)
+        .expect("Signing failed");
+
+    // Output full blob
+    signed_blob.extend_from_slice(&signature);
+    Ok(signed_blob)
+}
+
+/// Verifies the signature of a signed blob.
+///
+/// This function checks the validity of a signature associated with a blob of data.
+/// It starts by reading and parsing the header to ensure the integrity of the data, followed by checking the signature using the appropriate public key.
+///
+/// # Arguments
+/// * `raw` - A byte slice representing the raw signed data. This includes both the header and the signature.
+///
+/// # Returns
+/// * `Result<bool, Box<dyn std::error::Error>>` - A result containing a boolean:
+///   - `true` if the signature is successfully verified,
+///   - `false` if no matching public key is found or signature verification fails.
+///
+/// # Errors
+/// Returns an error if the blob's magic is invalid, the header is not properly formatted, or there is an issue during signature verification.
+/// Possible errors include:
+///   - Invalid magic value in the header,
+///   - Inconsistent blob length compared to the header's data length,
+///   - Failure to find or verify the public key for the signature.
+fn verify_signature(raw: &[u8]) -> Result<bool, Box<dyn std::error::Error>> {
+    let mut cursor = std::io::Cursor::new(raw);
+
+    let mut magic = [0u8; 4];
+    cursor.read_exact(&mut magic)?;
+
+    if &magic != b"SIG1" && &magic != b"SIG2" {
+        return Err(format!(
+            "Bad magic: {:?}",
+            std::str::from_utf8(&magic).unwrap_or("<non-UTF8>")
+        )
+        .into());
+    }
+
+    // Parse header
+    let mut buf1 = [0u8; 1];
+    cursor.read_exact(&mut buf1)?;
+    let alg_id = buf1[0];
+
+    cursor.read_exact(&mut buf1)?;
+    let key_id_len = buf1[0] as usize;
+    let mut key_id_bytes = vec![0u8; key_id_len];
+    cursor.read_exact(&mut key_id_bytes)?;
+    let key_id = String::from_utf8_lossy(&key_id_bytes).to_string();
+
+    let mut buf2 = [0u8; 2];
+    cursor.read_exact(&mut buf2)?;
+    let filename_len = u16::from_be_bytes(buf2) as usize;
+    let mut filename_bytes = vec![0u8; filename_len];
+    cursor.read_exact(&mut filename_bytes)?;
+
+    let mut buf8 = [0u8; 8];
+    cursor.read_exact(&mut buf8)?;
+    let data_len = u64::from_be_bytes(buf8) as usize;
+
+    let header_len = 4 + 1 + 1 + key_id_len + 2 + filename_len + 8;
+    let data_end = header_len + data_len;
+
+    if raw.len() < data_end {
+        return Err("Blob too short".into());
+    }
+
+    // Fully parsed blocks here
+    let signed_blob = &raw[..data_end];
+    let signature = &raw[data_end..];
+    let data_hash = utils::hash(signed_blob);
+
+    let pub_key_option = get_unowned_or_owned_public_key(&key_id, false);
+    match pub_key_option {
+        Ok(pub_key) => {
+            asymmetric_crypto::id_verify(
+                alg_id,
+                &pub_key.unwrap().public_key(),
+                &data_hash,
+                signature,
+            )?;
+            Ok(true)
+        }
+        Err(_e) => Ok(false),
+    }
+}
+
+/// Strips the signature blob into its components: filename and data.
+///
+/// This function extracts the `filename` and the signed `data` from a signed data blob.
+/// It starts by parsing the header to retrieve the necessary information such as algorithm ID, key ID, filename length, and data length,
+/// then it returns the filename and the actual signed data.
+///
+/// # Arguments
+/// * `raw` - A byte slice representing the raw signed data blob, which contains a header followed by the signature data.
+///
+/// # Returns
+/// * `Result<(Vec<u8>, Vec<u8>), Box<dyn std::error::Error>>` - A tuple containing:
+///   - `Vec<u8>` representing the filename bytes (in the form of UTF-8),
+///   - `Vec<u8>` representing the actual signed data.
+///
+/// # Errors
+/// Returns an error if the blob has an invalid magic, malformed header, or the data length doesn't match the expected size of the blob.
+/// Possible errors include:
+///   - Invalid magic value in the header (should be either `SIG1` or `SIG2`),
+///   - Inconsistent blob length compared to the header's data length.
+fn strip_signature_blob(raw: &[u8]) -> Result<(Vec<u8>, Vec<u8>), Box<dyn std::error::Error>> {
+    let mut cursor = std::io::Cursor::new(raw);
+
+    // Magic should be some SIGi
+    let mut magic = [0u8; 4];
+    cursor.read_exact(&mut magic)?;
+
+    if &magic != b"SIG1" && &magic != b"SIG2" {
+        return Err(format!(
+            "Bad magic: {:?}",
+            std::str::from_utf8(&magic).unwrap_or("<non-UTF8>")
+        )
+        .into());
+    }
+
+    // parse header
+    let mut buf1 = [0u8; 1];
+    cursor.read_exact(&mut buf1)?; // alg_id
+
+    cursor.read_exact(&mut buf1)?;
+    let key_id_len = buf1[0] as usize;
+    cursor.set_position(cursor.position() + key_id_len as u64);
+
+    let mut buf2 = [0u8; 2];
+    cursor.read_exact(&mut buf2)?;
+    let filename_len = u16::from_be_bytes(buf2) as usize;
+    let mut filename_bytes = vec![0u8; filename_len];
+    cursor.read_exact(&mut filename_bytes)?;
+
+    let mut buf8 = [0u8; 8];
+    cursor.read_exact(&mut buf8)?;
+    let data_len = u64::from_be_bytes(buf8) as usize;
+
+    let header_len = cursor.position() as usize;
+    let data_end = header_len + data_len;
+
+    // Error if the blob is to small
+    if raw.len() < data_end {
+        return Err("Blob too short".into());
+    }
+
+    let data = raw[header_len..data_end].to_vec();
+
+    Ok((filename_bytes, data))
 }
 
 fn main() {
@@ -1286,7 +1261,7 @@ fn main() {
                     }
                 },
                 "memory_cost" | "time_cost" | "parallelism" | "iterations" => {
-                    let number = parse_u32_or_exit(&args.update_field, &args.value);
+                    let number = utils::parse_u32_or_exit(&args.update_field, &args.value);
                     profile.params.insert(args.update_field.clone(), number);
                 }
                 field => {
@@ -1309,7 +1284,7 @@ fn main() {
             cli::validate_args(&args);
 
             // Avoid overwriting keys
-            if key_storage::does_key_exist(args.id.clone()).unwrap() {
+            if key_storage::does_key_exist(&args.id).unwrap() {
                 warn_user_or_exit(&format!(
                     "There is already a key with the id: {}. Overwrite?",
                     args.id
@@ -1369,7 +1344,7 @@ fn main() {
 
         cli::Command::DeleteKey(args) => {
             if args.unowned {
-                if key_storage::does_public_key_exist(args.id.clone()).unwrap() {
+                if key_storage::does_public_key_exist(&args.id).unwrap() {
                     key_storage::delete_public_key(args.id.as_str())
                         .expect("Failed to delete key.");
                     println!("Key has been deleted.")
@@ -1377,7 +1352,7 @@ fn main() {
                     println!("Key does not exist.")
                 }
             } else {
-                if key_storage::does_key_exist(args.id.clone()).unwrap() {
+                if key_storage::does_key_exist(&args.id).unwrap() {
                     key_storage::delete_key(args.id.as_str()).expect("Failed to delete key.");
                     println!("Key has been deleted.")
                 } else {
@@ -1483,15 +1458,26 @@ fn main() {
             let raw = read_file(key_path.to_str().unwrap()).unwrap();
             let mut cursor = std::io::Cursor::new(&raw);
 
-            // === Parse header ===
+            // Parse header
             let mut magic = [0u8; 4];
             cursor.read_exact(&mut magic).unwrap();
             if &magic != b"KEY1" {
                 panic!("Bad magic");
             }
 
-            // add warning about overwriting keys?
             let key = raw[4..].to_vec();
+            let key_id = key_storage::get_id_from_serialized_public_key(&key).unwrap();
+
+            // Avoid overwriting
+            if key_storage::does_public_key_exist(&key_id).unwrap() {
+                warn_user_or_exit(
+                    format!(
+                        "There is already a key with ID: {}. Would you like to overwrite?",
+                        key_id
+                    )
+                    .as_str(),
+                )
+            }
             key_storage::import_key(&key, args.name).expect("Failed to import key");
             println!("Public key imported successfully")
         }

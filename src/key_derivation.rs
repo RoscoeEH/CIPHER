@@ -174,3 +174,46 @@ pub fn id_derive_key(
         ),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_argon2_derive_key_kat() {
+        let password = Secret::new(String::from("password"));
+        let salt = b"1234567890abcdef";
+        let dklen = 32;
+        let mem_cost = Some(65536); // 64 MiB
+        let t_cost = Some(3);
+        let par = Some(1);
+
+        let expected_key_bytes: [u8; 32] = [
+            0xec, 0xf1, 0xbe, 0x99, 0x6c, 0xb4, 0x73, 0xd2, 0xc7, 0xbd, 0x29, 0x96, 0x36, 0xda,
+            0x0f, 0x93, 0x56, 0x3f, 0xfe, 0x3c, 0x9a, 0x2d, 0x7e, 0xc3, 0xf7, 0xfb, 0xf5, 0x58,
+            0x9f, 0x63, 0x34, 0xc1,
+        ];
+        let derived_key = argon2_derive_key(password, salt, dklen, mem_cost, t_cost, par);
+
+        assert_eq!(derived_key.expose_secret(), &expected_key_bytes);
+    }
+
+    #[test]
+    fn test_pbkdf2_derive_key_kat() {
+        let password = Secret::new("password123".to_string());
+        let salt = b"1234567890abcdef"; // 16 bytes salt
+        let dklen = 32;
+        let iters = Some(100_000);
+
+        let expected_key_bytes: [u8; 32] = [
+            88, 7, 242, 176, 202, 200, 110, 191, 100, 135, 100, 111, 218, 5, 123, 246, 104, 77,
+            132, 0, 185, 175, 159, 195, 14, 242, 161, 166, 66, 113, 164, 12,
+        ];
+        let derived_key = pbkdf2_derive_key(password, salt, dklen, iters);
+
+        // Print the derived key bytes as hex for your reference (remove in final test)
+        println!("Derived key: {:02x?}", derived_key.expose_secret());
+
+        assert_eq!(derived_key.expose_secret(), &expected_key_bytes);
+    }
+}

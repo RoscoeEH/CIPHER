@@ -27,6 +27,7 @@ use rpassword::read_password;
 use secrecy::{ExposeSecret, Secret};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::env;
 use std::error::Error;
 use std::fs::File;
 use std::io::{self, Read, Write};
@@ -145,6 +146,11 @@ pub fn u64_to_datetime(ts: u64) -> DateTime<Utc> {
 /// # Exits
 /// Exits the process with status 0 if password verification fails.
 pub fn get_password(verify: bool, is_sym_key: Option<bool>) -> Secret<String> {
+    // If TESTING env var is set, return "password" directly
+    if env::var("TESTING").is_ok() {
+        return Secret::new("password".to_string());
+    }
+
     match is_sym_key {
         Some(true) => println!("Enter password for symmetric key: "),
         Some(false) => println!("Enter password for asymmetric key: "),

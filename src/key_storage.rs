@@ -389,7 +389,7 @@ impl HasId for UnownedPublicKey {
 /// The `internal_id` field is set to the keypair's actual ID, while the `id`
 /// field may be overridden to avoid conflicts during import.
 pub fn export_key(id: &str) -> Result<Vec<u8>, Box<dyn Error>> {
-    let keypair: AsymKeyPair = match get_key(id).unwrap() {
+    let keypair: AsymKeyPair = match get_key(id).expect("Failed to search for key") {
         Some(k) => k,
         None => return Err("Key not found".into()),
     };

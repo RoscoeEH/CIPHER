@@ -31,7 +31,7 @@ pub mod utils;
 
 use clap::Parser;
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Simpler panics for production
     if !cfg!(debug_assertions) {
         panic::set_hook(Box::new(|_info| {
@@ -47,17 +47,30 @@ fn main() {
 
             // Checks id the user provided a profile
             let profile = match args.profile.as_str() {
-                "Default" => user::init_profile().unwrap(),
-                other => user::get_profile(other).unwrap().unwrap(),
+                "Default" => user::init_profile()?,
+                other => match user::get_profile(other)? {
+                    Some(p) => p,
+                    None => {
+                        return Err(format!("No profile found matching: {}", other).into());
+                    }
+                },
             };
 
-            let input_path = PathBuf::from(args.input.clone().unwrap());
-            let filename = input_path.file_name().unwrap().to_str().unwrap();
+            let input_path = PathBuf::from(args.input.clone().unwrap()); // Error should be caught in CLI; this never is the 'None' option
+            let filename = input_path
+                .file_name()
+                .ok_or_else(|| format!("Input path has no filename: {}", input_path.display()))?
+                .to_str()
+                .ok_or_else(|| format!("Filename is not valid UTF-8: {}", input_path.display()))?;
             let filename_bytes = filename.as_bytes();
             let filename_len = filename_bytes.len() as u16;
 
             // Read plaintext
-            let mut plaintext = utils::read_file(input_path.to_str().unwrap()).unwrap();
+            let mut plaintext = utils::read_file(
+                input_path
+                    .to_str()
+                    .ok_or_else(|| format!("Failed to read file: {}", input_path.display()))?,
+            )?;
             plaintext.extend_from_slice(filename_bytes); // Append filename for recovery
 
             // Determine output path
@@ -516,4 +529,5 @@ fn main() {
             println!("Public key imported successfully")
         }
     }
+    Ok(())
 }

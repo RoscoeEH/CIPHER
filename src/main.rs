@@ -56,7 +56,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 },
             };
 
-            let input_path = PathBuf::from(args.input.clone().unwrap()); // Error should be caught in CLI; this never is the 'None' option
+            let input_path_str = args
+                .input
+                .clone()
+                .ok_or("Could not find input path".to_string())?;
+            let input_path = PathBuf::from(input_path_str);
             let filename = input_path
                 .file_name()
                 .ok_or_else(|| format!("Input path has no filename: {}", input_path.display()))?
@@ -80,8 +84,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     p.set_extension("enc");
                     p
                 }
+                // No output path specified, make one based on input
                 None => {
-                    let mut p = PathBuf::from(args.input.clone().unwrap());
+                    let out_path_str = args
+                        .input
+                        .clone()
+                        .ok_or("Could not find input path".to_string())?;
+                    let mut p = PathBuf::from(out_path_str);
                     p.set_extension("enc");
                     p
                 }
@@ -96,17 +105,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             match asym {
                 true => {
                     // Asymmetric encryption
-                    let input_key_id = args
-                        .input_key
-                        .clone()
-                        .expect("Missing input key ID for asymmetric encryption");
+                    let input_key_id = args.input_key.clone().ok_or_else(|| {
+                        "Missing input key ID for asymmetric encryption".to_string()
+                    })?;
 
-                    let key = utils::get_unowned_or_owned_public_key(&input_key_id, false)
-                        .unwrap()
-                        .expect("No key found.");
+                    let key = utils::get_unowned_or_owned_public_key(&input_key_id, false)?
+                        .ok_or_else(|| format!("Could not find key: {}", input_key_id))?;
 
                     let sym_alg_id = match args.aead {
-                        Some(ref a) => utils::alg_name_to_id(a).unwrap(),
+                        Some(ref a) => utils::alg_name_to_id(a)?,
                         None => profile.aead_alg_id,
                     };
 
@@ -119,12 +126,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     // If there is a signing key, sign the data
                     if args.sign_key.is_some() {
-                        let sign_key: key_storage::AsymKeyPair =
-                            match key_storage::get_key(args.sign_key.unwrap().as_str()).unwrap() {
-                                Some(k) => k,
-                                None => panic!("Signing key not found."),
-                            };
-                        let sign_private_key = utils::decrypt_private_key(&sign_key).unwrap();
+                        let sign_key: key_storage::AsymKeyPair = match key_storage::get_key(
+                            args.sign_key
+                                .ok_or_else(|| "Invalid or no sign key".to_string())?
+                                .as_str(),
+                        )? {
+                            Some(k) => k,
+                            None => return Err("Signing key not found.".into()),
+                        };
+                        let sign_private_key = utils::decrypt_private_key(&sign_key)?;
                         blob = utils::build_signed_blob(
                             b"SIG2",
                             sign_key.key_type,
@@ -132,8 +142,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             "verified.enc",
                             &blob,
                             &sign_private_key,
-                        )
-                        .unwrap();
+                        )?;
                     }
                     let mut f = File::create(&out_path).expect("Failed to create output file");
                     f.write_all(&blob).expect("Failed to write ciphertext");
@@ -151,10 +160,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let key_info = match args.input_key {
                         Some(ref input_key_id) => {
                             let mut sym_key: key_storage::SymKey =
-                                key_storage::get_key(input_key_id)
-                                    .unwrap()
-                                    .ok_or("Key ID not found")
-                                    .unwrap();
+                                key_storage::get_key(input_key_id)?.ok_or("Key ID not found")?;
 
                             let password = utils::get_password(false, Some(true));
                             utils::derive_key_from_stored(&mut sym_key, password)
@@ -164,7 +170,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     };
 
                     let aead_id = match args.aead {
-                        Some(ref s) => utils::alg_name_to_id(s).unwrap(),
+                        Some(ref s) => utils::alg_name_to_id(s)?,
                         None => profile.aead_alg_id,
                     };
 
@@ -174,12 +180,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     // If there is a signing key, sign the data
                     if args.sign_key.is_some() {
-                        let sign_key: key_storage::AsymKeyPair =
-                            match key_storage::get_key(args.sign_key.unwrap().as_str()).unwrap() {
-                                Some(k) => k,
-                                None => panic!("Signing key not found."),
-                            };
-                        let sign_private_key = utils::decrypt_private_key(&sign_key).unwrap();
+                        let sign_key: key_storage::AsymKeyPair = match key_storage::get_key(
+                            args.sign_key
+                                .ok_or_else(|| "No signing key.".to_string())?
+                                .as_str(),
+                        )? {
+                            Some(k) => k,
+                            None => panic!("Signing key not found."),
+                        };
+                        let sign_private_key = utils::decrypt_private_key(&sign_key)?;
                         blob = utils::build_signed_blob(
                             b"SIG2",
                             sign_key.key_type,
@@ -187,8 +196,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             "verified.enc",
                             &blob,
                             &sign_private_key,
-                        )
-                        .unwrap();
+                        )?;
                     }
                     let mut f = File::create(&out_path).expect("Failed to create output file");
                     f.write_all(&blob).expect("Failed to write ciphertext");
@@ -200,7 +208,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         cli::Command::Decrypt(args) => {
             cli::validate_args(&args);
-            let in_path = PathBuf::from(args.input.clone().unwrap());
+            let in_path = PathBuf::from(
+                args.input
+                    .clone()
+                    .ok_or_else(|| "No input path.".to_string())?,
+            );
             let mut f = File::open(&in_path).expect("Failed to open encrypted file");
 
             // Read blob and magic
@@ -221,7 +233,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         "Unrecognized signature. Would you like to decrypt anyway?",
                     );
                 }
-                let (_, encrypted_unsigned_data) = utils::strip_signature_blob(&blob).unwrap();
+                let (_, encrypted_unsigned_data) = utils::strip_signature_blob(&blob)?;
                 blob = encrypted_unsigned_data;
                 magic = blob[..4]
                     .try_into()
@@ -231,7 +243,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             match &magic {
                 b"ENC2" => {
                     // Asymmetric decryption
-                    let (filename_bytes, plaintext) = utils::decrypt_asym_blob(&blob).unwrap();
+                    let (filename_bytes, plaintext) = utils::decrypt_asym_blob(&blob)?;
                     let original_filename = String::from_utf8_lossy(&filename_bytes);
 
                     // Get out path and write to file
@@ -285,7 +297,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap_or_else(|| "Default".to_string());
 
             // Either make a new profile or get the existing one to edit
-            let mut profile = match user::get_profile(&id).unwrap() {
+            let mut profile = match user::get_profile(&id)? {
                 Some(p) => p,
                 None => user::get_new_profile(id.clone()),
             };
@@ -331,7 +343,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             cli::validate_args(&args);
 
             // Avoid overwriting keys
-            if key_storage::does_key_exist(&args.id).unwrap() {
+            if key_storage::does_key_exist(&args.id)? {
                 utils::warn_user_or_exit(&format!(
                     "There is already a key with the id: {}. Overwrite?",
                     args.id
@@ -391,7 +403,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         cli::Command::DeleteKey(args) => {
             if args.unowned {
-                if key_storage::does_public_key_exist(&args.id).unwrap() {
+                if key_storage::does_public_key_exist(&args.id)? {
                     key_storage::delete_public_key(args.id.as_str())
                         .expect("Failed to delete key.");
                     println!("Key has been deleted.")
@@ -399,7 +411,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("Key does not exist.")
                 }
             } else {
-                if key_storage::does_key_exist(&args.id).unwrap() {
+                if key_storage::does_key_exist(&args.id)? {
                     key_storage::delete_key(args.id.as_str()).expect("Failed to delete key.");
                     println!("Key has been deleted.")
                 } else {
@@ -413,14 +425,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             cli::validate_args(&args);
 
             let input_path = PathBuf::from(&args.input);
-            let filename = input_path.file_name().unwrap().to_str().unwrap();
-            let data = utils::read_file(input_path.to_str().unwrap()).unwrap();
+            let filename = input_path
+                .file_name()
+                .ok_or_else(|| "Invalid or no input filename".to_string())?
+                .to_str()
+                .ok_or_else(|| "Invalid or no input filename".to_string())?;
+
+            let data = utils::read_file(
+                input_path
+                    .to_str()
+                    .ok_or_else(|| "Invalid or no filename".to_string())?,
+            )?;
 
             // load/decrypt private key
-            let keypair: key_storage::AsymKeyPair = key_storage::get_key(&args.key_id)
-                .unwrap()
-                .ok_or("Key ID not found in keystore")
-                .unwrap();
+            let keypair: key_storage::AsymKeyPair =
+                key_storage::get_key(&args.key_id)?.ok_or("Key ID not found in keystore")?;
             // Compute the kek
             let kek_password = utils::get_password(false, Some(false));
             let kek = key_derivation::id_derive_key(
@@ -437,7 +456,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     &keypair.private_key,
                     None,
                 )
-                .unwrap(),
+                .map_err(|e| format!("Decryption failed: {:?}", e))?,
             );
 
             // sign the blob
@@ -454,7 +473,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Write out blob
             let sig_path = input_path.with_extension("sig");
             let mut f = File::create(&sig_path).expect("Failed to create output file");
-            f.write_all(&blob).unwrap();
+            f.write_all(&blob)?;
 
             println!("Signed file written to '{}'", sig_path.display());
         }
@@ -462,9 +481,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         cli::Command::Verify(args) => {
             cli::validate_args(&args);
             let sig_path = PathBuf::from(&args.input);
-            let raw = utils::read_file(sig_path.to_str().unwrap()).unwrap();
+            let raw = utils::read_file(
+                sig_path
+                    .to_str()
+                    .ok_or_else(|| "Invalid or no filename".to_string())?,
+            )?;
 
-            if !utils::verify_signature(&raw).unwrap() {
+            if !utils::verify_signature(&raw)? {
                 println!("Signature verification failed");
                 exit(0);
             }
@@ -473,17 +496,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Stip blob and create new file
             if !args.only_verify {
-                let (filename_bytes, data) = utils::strip_signature_blob(&raw).unwrap();
+                let (filename_bytes, data) = utils::strip_signature_blob(&raw)?;
                 let original_filename = String::from_utf8_lossy(&filename_bytes);
                 let out = sig_path.with_file_name(original_filename.to_string());
-                let mut f = File::create(&out).unwrap();
-                f.write_all(&data).unwrap();
+                let mut f = File::create(&out)?;
+                f.write_all(&data)?;
                 println!("Unsigned data written to '{}'", out.display());
             }
         }
         // Creates a .pub of one of your keypairs that others can import
         cli::Command::ExportKey(args) => {
-            let key = key_storage::export_key(args.key_id.as_str()).unwrap();
+            let key = key_storage::export_key(args.key_id.as_str())?;
             let mut key_file = Vec::new();
             key_file.extend_from_slice(b"KEY1");
             key_file.extend_from_slice(&key);
@@ -494,7 +517,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
             let output_path = PathBuf::from(&file_name).with_extension("pub");
             let mut f = File::create(&output_path).expect("Failed to create output file");
-            f.write_all(&key_file).unwrap();
+            f.write_all(&key_file)?;
             println!("Public key written to '{}'", output_path.display());
         }
 
@@ -502,21 +525,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         cli::Command::ImportKey(args) => {
             cli::validate_args(&args);
             let key_path = PathBuf::from(&args.input_file);
-            let raw = utils::read_file(key_path.to_str().unwrap()).unwrap();
+            let raw = utils::read_file(
+                key_path
+                    .to_str()
+                    .ok_or_else(|| "Invalid or no filename".to_string())?,
+            )?;
             let mut cursor = std::io::Cursor::new(&raw);
 
             // Parse header
             let mut magic = [0u8; 4];
-            cursor.read_exact(&mut magic).unwrap();
+            cursor.read_exact(&mut magic)?;
             if &magic != b"KEY1" {
                 panic!("Bad magic");
             }
 
             let key = raw[4..].to_vec();
-            let key_id = key_storage::get_id_from_serialized_public_key(&key).unwrap();
+            let key_id = key_storage::get_id_from_serialized_public_key(&key)?;
 
             // Avoid overwriting
-            if key_storage::does_public_key_exist(&key_id).unwrap() {
+            if key_storage::does_public_key_exist(&key_id)? {
                 utils::warn_user_or_exit(
                     format!(
                         "There is already a key with ID: {}. Would you like to overwrite?",

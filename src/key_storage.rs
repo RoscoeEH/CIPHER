@@ -23,53 +23,54 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 // Enables storage of the keys within the application instead of where you run the program
-fn get_keystore_path() -> PathBuf {
+fn get_keystore_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
     let base_dir = if cfg!(debug_assertions) {
         // Dev path
         PathBuf::from("./keystore")
     } else {
         // Production path
         let project_dirs = ProjectDirs::from("com", "cipher", "cipher")
-            .expect("Could not determine project directories");
+            .ok_or_else(|| "Could not determine project directories".to_string())?;
         project_dirs.data_local_dir().join("keystore")
     };
 
-    std::fs::create_dir_all(&base_dir).expect("Failed to create keystore directory");
-    base_dir
+    std::fs::create_dir_all(&base_dir)?;
+    Ok(base_dir)
 }
 
 // Rocksdb database for storing keys
 lazy_static! {
     static ref KEY_STORE: Mutex<DB> = {
-        let path = get_keystore_path();
-        Mutex::new(DB::open_default(path).unwrap())
+        let path = get_keystore_path().expect("Failed to get keystore path"); // Lazy static requires a .expect()
+        let db = DB::open_default(path).expect("Failed to open RocksDB");
+        Mutex::new(db)
     };
 }
 
 // Repeat for public key database
-fn get_public_keystore_path() -> PathBuf {
+fn get_public_keystore_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
     let base_dir = if cfg!(debug_assertions) {
         // Dev path
         PathBuf::from("./public_keystore")
     } else {
         // Production path
         let project_dirs = ProjectDirs::from("com", "cipher", "cipher")
-            .expect("Could not determine project directories");
+            .ok_or_else(|| "Could not determine project directories".to_string())?;
         project_dirs.data_local_dir().join("public_keystore")
     };
 
-    std::fs::create_dir_all(&base_dir).expect("Failed to create keystore directory");
-    base_dir
+    std::fs::create_dir_all(&base_dir)?;
+    Ok(base_dir)
 }
 
 // Rocksdb database for storing keys
 lazy_static! {
     static ref PUBLIC_KEY_STORE: Mutex<DB> = {
-        let path = get_public_keystore_path();
-        Mutex::new(DB::open_default(path).unwrap())
+        let path = get_public_keystore_path().expect("Failed to get public keystore path");
+        let db = DB::open_default(path).expect("Failed to open public RocksDB keystore");
+        Mutex::new(db)
     };
 }
-
 // Allows for simplifictaion of storing function
 pub trait HasId {
     fn id(&self) -> &str;
@@ -389,7 +390,7 @@ impl HasId for UnownedPublicKey {
 /// The `internal_id` field is set to the keypair's actual ID, while the `id`
 /// field may be overridden to avoid conflicts during import.
 pub fn export_key(id: &str) -> Result<Vec<u8>, Box<dyn Error>> {
-    let keypair: AsymKeyPair = match get_key(id).expect("Failed to search for key") {
+    let keypair: AsymKeyPair = match get_key(id)? {
         Some(k) => k,
         None => return Err("Key not found".into()),
     };

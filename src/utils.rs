@@ -117,11 +117,10 @@ pub fn datetime_to_u64(datetime: DateTime<Utc>) -> u64 {
 }
 
 /// Converts a UNIX timestamp (u64) to a DateTime<Utc>.
-pub fn u64_to_datetime(ts: u64) -> DateTime<Utc> {
-    // Safe as ts is from chrono timestamps, and this returns Result
-    DateTime::<Utc>::from_timestamp(ts as i64, 0).expect("Invalid UNIX timestamp value")
+pub fn u64_to_datetime(ts: u64) -> Result<DateTime<Utc>, String> {
+    DateTime::<Utc>::from_timestamp(ts as i64, 0)
+        .ok_or_else(|| format!("Invalid UNIX timestamp: {ts}"))
 }
-
 // === flow and input helpers ===
 
 /// Prompts the user for a password, optionally verifying it by re-entry.

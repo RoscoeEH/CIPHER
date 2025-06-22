@@ -54,7 +54,7 @@ fn argon2_derive_key(
     mem_cost: Option<u32>,
     t_cost: Option<u32>,
     par: Option<u32>,
-) -> Secret<Vec<u8>> {
+) -> Result<Secret<Vec<u8>>, Box<dyn std::error::Error>> {
     // Default values
     let memory_cost = match mem_cost {
         Some(n) => n,
@@ -70,18 +70,18 @@ fn argon2_derive_key(
     };
 
     let params = Params::new(memory_cost, time_cost, parallelism, Some(dklen))
-        .expect("Invalid Argon2 parameters");
+        .map_err(|e| format!("Invalid Argon2 parameters: {}", e))?;
 
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
 
     let mut key = vec![0u8; dklen];
     argon2
         .hash_password_into(password.expose_secret().as_bytes(), salt, &mut key)
-        .expect("Argon2 hashing failed");
+        .map_err(|_e| "Argon2 hashing failed")?;
 
     let secret_key = Secret::new(key.clone());
     key.zeroize();
-    secret_key
+    Ok(secret_key)
 }
 
 /// Derives a symmetric key from a password using PBKDF2 with HMAC-SHA256.
@@ -108,7 +108,7 @@ fn pbkdf2_derive_key(
     salt: &[u8],
     dklen: usize,
     iters: Option<u32>,
-) -> Secret<Vec<u8>> {
+) -> Result<Secret<Vec<u8>>, Box<dyn std::error::Error>> {
     let iterations = match iters {
         Some(n) => n,
         None => 600_000,
@@ -125,7 +125,7 @@ fn pbkdf2_derive_key(
     let secret_key = Secret::new(key.clone());
     key.zeroize();
 
-    secret_key
+    Ok(secret_key)
 }
 
 /// Derives a symmetric key from a password using the specified key derivation algorithm.
@@ -157,7 +157,7 @@ pub fn id_derive_key(
     salt: &[u8],
     dklen: usize,
     params: &HashMap<String, u32>,
-) -> Secret<Vec<u8>> {
+) -> Result<Secret<Vec<u8>>, Box<dyn std::error::Error>> {
     match alg_id {
         ARGON2_ID => argon2_derive_key(
             password,
@@ -168,10 +168,11 @@ pub fn id_derive_key(
             params.get("parallelism").copied(),
         ),
         PBKDF2_ID => pbkdf2_derive_key(password, salt, dklen, params.get("iterations").copied()),
-        _ => panic!(
+        _ => Err(format!(
             "Attempted key derivation with unknown algorithm ID: {}",
             alg_id
-        ),
+        )
+        .into()),
     }
 }
 
@@ -180,7 +181,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_argon2_derive_key_kat() {
+    fn test_argon2_derive_key_kat() -> Result<(), Box<dyn std::error::Error>> {
         let password = Secret::new(String::from("password"));
         let salt = b"1234567890abcdef";
         let dklen = 32;
@@ -193,13 +194,14 @@ mod tests {
             0x0f, 0x93, 0x56, 0x3f, 0xfe, 0x3c, 0x9a, 0x2d, 0x7e, 0xc3, 0xf7, 0xfb, 0xf5, 0x58,
             0x9f, 0x63, 0x34, 0xc1,
         ];
-        let derived_key = argon2_derive_key(password, salt, dklen, mem_cost, t_cost, par);
+        let derived_key = argon2_derive_key(password, salt, dklen, mem_cost, t_cost, par)?;
 
         assert_eq!(derived_key.expose_secret(), &expected_key_bytes);
+        Ok(())
     }
 
     #[test]
-    fn test_pbkdf2_derive_key_kat() {
+    fn test_pbkdf2_derive_key_kat() -> Result<(), Box<dyn std::error::Error>> {
         let password = Secret::new("password123".to_string());
         let salt = b"1234567890abcdef"; // 16 bytes salt
         let dklen = 32;
@@ -209,11 +211,12 @@ mod tests {
             88, 7, 242, 176, 202, 200, 110, 191, 100, 135, 100, 111, 218, 5, 123, 246, 104, 77,
             132, 0, 185, 175, 159, 195, 14, 242, 161, 166, 66, 113, 164, 12,
         ];
-        let derived_key = pbkdf2_derive_key(password, salt, dklen, iters);
+        let derived_key = pbkdf2_derive_key(password, salt, dklen, iters)?;
 
         // Print the derived key bytes as hex for your reference (remove in final test)
         println!("Derived key: {:02x?}", derived_key.expose_secret());
 
         assert_eq!(derived_key.expose_secret(), &expected_key_bytes);
+        Ok(())
     }
 }

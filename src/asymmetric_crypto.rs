@@ -75,27 +75,16 @@ use crate::symmetric_encryption::{id_decrypt, id_encrypt};
 /// This function will panic if:
 /// - RSA key generation fails.
 /// - DER encoding of the private or public key fails.
-fn rsa_key_gen(bits: usize) -> (Secret<Vec<u8>>, Vec<u8>) {
+fn rsa_key_gen(bits: usize) -> Result<(Secret<Vec<u8>>, Vec<u8>), Box<dyn std::error::Error>> {
     let mut rng = thread_rng();
-    let private_key = RsaPrivateKey::new(&mut rng, bits).expect("RSA key gen failed");
+    let private_key = RsaPrivateKey::new(&mut rng, bits)?;
     let public_key = RsaPublicKey::from(&private_key);
 
-    let keypair = (
-        Secret::new(
-            private_key
-                .to_pkcs1_der()
-                .expect("Failed to encode private key")
-                .as_bytes()
-                .to_vec(),
-        ),
-        public_key
-            .to_pkcs1_der()
-            .expect("Failed to encode public key")
-            .as_bytes()
-            .to_vec(),
-    );
-    drop(private_key);
-    keypair
+    let private_key_der = private_key.to_pkcs1_der()?.as_bytes().to_vec();
+
+    let public_key_der = public_key.to_pkcs1_der()?.as_bytes().to_vec();
+
+    Ok((Secret::new(private_key_der), public_key_der))
 }
 
 /// Encrypts data using an RSA public key with PKCS#1 v1.5 padding.
@@ -117,12 +106,10 @@ fn rsa_key_gen(bits: usize) -> (Secret<Vec<u8>>, Vec<u8>) {
 /// This function will panic if:
 /// - The public key cannot be parsed from DER format.
 /// - The encryption operation fails.
-fn rsa_enc(pub_key: &[u8], data: &[u8]) -> Vec<u8> {
-    let public_key = RsaPublicKey::from_pkcs1_der(pub_key).expect("Failed to parse DER public key");
-
-    public_key
-        .encrypt(&mut thread_rng(), Pkcs1v15Encrypt, data)
-        .expect("RSA encryption failed")
+fn rsa_enc(pub_key: &[u8], data: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let public_key = RsaPublicKey::from_pkcs1_der(pub_key)?;
+    let encrypted_data = public_key.encrypt(&mut thread_rng(), Pkcs1v15Encrypt, data)?;
+    Ok(encrypted_data)
 }
 
 /// Decrypts RSA-encrypted data using a private key with PKCS#1 v1.5 padding.
@@ -144,13 +131,10 @@ fn rsa_enc(pub_key: &[u8], data: &[u8]) -> Vec<u8> {
 /// This function will panic if:
 /// - The private key cannot be parsed from DER format.
 /// - The decryption operation fails.
-fn rsa_dec(priv_key: &[u8], ciphertext: &[u8]) -> Vec<u8> {
-    let private_key =
-        RsaPrivateKey::from_pkcs1_der(priv_key).expect("Failed to parse DER private key");
-
-    private_key
-        .decrypt(Pkcs1v15Encrypt, ciphertext)
-        .expect("RSA decryption failed")
+fn rsa_dec(priv_key: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let private_key = RsaPrivateKey::from_pkcs1_der(priv_key)?;
+    let decrypted_data = private_key.decrypt(Pkcs1v15Encrypt, ciphertext)?;
+    Ok(decrypted_data)
 }
 
 /// Signs data using an RSA private key with PKCS#1 v1.5 padding and SHA-256.
@@ -172,17 +156,15 @@ fn rsa_dec(priv_key: &[u8], ciphertext: &[u8]) -> Vec<u8> {
 /// This function will panic if:
 /// - The private key cannot be parsed from DER format.
 /// - The signing operation fails (e.g., internal errors in RNG or key usage).
-fn rsa_sign(priv_key: &[u8], data: &[u8]) -> Vec<u8> {
-    let private_key =
-        RsaPrivateKey::from_pkcs1_der(priv_key).expect("Failed to parse DER private key");
+fn rsa_sign(priv_key: &[u8], data: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let private_key = RsaPrivateKey::from_pkcs1_der(priv_key)?;
 
-    // Create a PKCS#1 v1.5 signing key
-    let signing_key = RsaSigningKey::<sha2::Sha256>::new(private_key.clone());
-
+    let signing_key = RsaSigningKey::<sha2::Sha256>::new(private_key);
     let mut rng = thread_rng();
+
     let signature = signing_key.sign_with_rng(&mut rng, data);
 
-    signature.to_vec()
+    Ok(signature.to_vec())
 }
 
 /// Verifies an RSA signature using a public key with PKCS#1 v1.5 padding and SHA-256.
@@ -206,13 +188,17 @@ fn rsa_sign(priv_key: &[u8], data: &[u8]) -> Vec<u8> {
 ///
 /// This function will panic if:
 /// - The public key cannot be parsed from DER format.
-fn rsa_verify(pub_key: &[u8], data: &[u8], signature: &[u8]) -> Result<(), rsa::signature::Error> {
-    let public_key = RsaPublicKey::from_pkcs1_der(pub_key).expect("Failed to parse DER public key");
-    let verifying_key = RsaVerifyingKey::<Sha256>::new(public_key.clone());
+fn rsa_verify(
+    pub_key: &[u8],
+    data: &[u8],
+    signature: &[u8],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let public_key = RsaPublicKey::from_pkcs1_der(pub_key)?;
+    let verifying_key = RsaVerifyingKey::<Sha256>::new(public_key);
     let sig = RsaSignature::try_from(signature)?;
 
-    // Returns Err(_) if the signature is invalid
-    verifying_key.verify(data, &sig)
+    verifying_key.verify(data, &sig)?;
+    Ok(())
 }
 
 // === ECC Related Operations ===
@@ -234,19 +220,21 @@ fn rsa_verify(pub_key: &[u8], data: &[u8], signature: &[u8]) -> Result<(), rsa::
 ///
 /// This function will panic if:
 /// - The private key fails to encode into PKCS#8 DER format.
-fn ecc_key_gen() -> (Secret<Vec<u8>>, Vec<u8>) {
+fn ecc_key_gen() -> Result<(Secret<Vec<u8>>, Vec<u8>), Box<dyn std::error::Error>> {
     // Generate a secret key
     let secret = P256SecretKey::random(&mut OsRng);
 
-    // Derive public key from secret
+    // Derive public key
     let public = P256PublicKey::from_secret_scalar(&secret.to_nonzero_scalar());
 
-    // Serialize keys
-    let private_key = Secret::new(secret.to_pkcs8_der().unwrap().as_bytes().to_vec());
+    // Serialize keys safely
+    let private_der = secret.to_pkcs8_der()?.as_bytes().to_vec();
+    let private_key = Secret::new(private_der);
+
     let public_key = public.to_encoded_point(false).as_bytes().to_vec();
     drop(secret);
 
-    (private_key, public_key)
+    Ok((private_key, public_key))
 }
 
 /// Encrypts data using ECC-based hybrid encryption with the NIST P-256 curve.

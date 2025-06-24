@@ -43,7 +43,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         // Handles all symmetric and asymmetric encryption; also can sign encrypted blobs
         cli::Command::Encrypt(args) => {
-            cli::validate_args(&args);
+            cli::validate_args(&args)?;
 
             // Checks id the user provided a profile
             let profile = match args.profile.as_str() {
@@ -164,7 +164,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let password = utils::get_password(false, Some(true))?;
                             utils::derive_key_from_stored(&mut sym_key, password)?
                         }
-                        None => utils::generate_key_from_args(&args, &profile),
+                        None => utils::generate_key_from_args(&args, &profile)?,
                     };
 
                     let aead_id = match args.aead {
@@ -204,7 +204,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         cli::Command::Decrypt(args) => {
-            cli::validate_args(&args);
+            cli::validate_args(&args)?;
             let in_path = PathBuf::from(
                 args.input
                     .clone()
@@ -277,7 +277,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         // Handles changed to default parameters
         cli::Command::Profile(args) => {
-            cli::validate_args(&args);
+            cli::validate_args(&args)?;
             let id = args
                 .profile
                 .clone()
@@ -286,7 +286,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Either make a new profile or get the existing one to edit
             let mut profile = match user::get_profile(&id)? {
                 Some(p) => p,
-                None => user::get_new_profile(id.clone()),
+                None => user::get_new_profile(id.clone())?,
             };
 
             // find the thing to update
@@ -327,7 +327,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         cli::Command::KeyGen(args) => {
-            cli::validate_args(&args);
+            cli::validate_args(&args)?;
 
             // Avoid overwriting keys
             if key_storage::does_key_exist(&args.id)? {
@@ -404,7 +404,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // signs any data and creates a .sig file
         cli::Command::Sign(args) => {
-            cli::validate_args(&args);
+            cli::validate_args(&args)?;
 
             let input_path = PathBuf::from(&args.input);
             let filename = input_path
@@ -423,14 +423,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let keypair: key_storage::AsymKeyPair =
                 key_storage::get_key(&args.key_id)?.ok_or("Key ID not found in keystore")?;
             // Compute the kek
-            let kek_password = utils::get_password(false, Some(false));
+            let kek_password = utils::get_password(false, Some(false))?;
             let kek = key_derivation::id_derive_key(
                 keypair.kek_kdf,
                 kek_password,
                 &keypair.kek_salt,
                 SYM_KEY_LEN,
                 &keypair.kek_params,
-            );
+            )?;
             let decrypted_private_key = Secret::new(
                 symmetric_encryption::id_decrypt(
                     keypair.kek_aead,
@@ -460,7 +460,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         // Verify .sig files and optionally strip the sig data
         cli::Command::Verify(args) => {
-            cli::validate_args(&args);
+            cli::validate_args(&args)?;
             let sig_path = PathBuf::from(&args.input);
             let raw = utils::read_file(
                 sig_path
@@ -504,7 +504,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Reads in .pub files into your key store
         cli::Command::ImportKey(args) => {
-            cli::validate_args(&args);
+            cli::validate_args(&args)?;
             let key_path = PathBuf::from(&args.input_file);
             let raw = utils::read_file(
                 key_path

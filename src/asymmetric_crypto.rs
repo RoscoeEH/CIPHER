@@ -237,13 +237,6 @@ fn ecc_key_gen() -> Result<(Secret<Vec<u8>>, Vec<u8>), Box<dyn std::error::Error
     Ok((private_key, public_key))
 }
 
-use p256::{
-    ecdh::EphemeralSecret, elliptic_curve::sec1::EncodedPoint, pkcs8::DecodePublicKey,
-    PublicKey as P256PublicKey,
-};
-use rand_core::OsRng;
-use secrecy::{ExposeSecret, Secret};
-use sha2::{Digest, Sha256};
 /// Encrypts data using ECC-based hybrid encryption with the NIST P-256 curve.
 ///
 /// This function performs an ephemeral ECDH key exchange using the recipient's
@@ -294,7 +287,7 @@ fn ecc_enc(pub_key: &[u8], data: &[u8], sym_alg_id: u8) -> Result<Vec<u8>, Box<d
     key_bytes.zeroize();
 
     // Encrypt data
-    let nonce = get_nonce();
+    let nonce = get_nonce()?;
     let ciphertext = id_encrypt(sym_alg_id, secret_key.expose_secret(), &nonce, data, None)
         .map_err(|e| Box::<dyn Error>::from(format!("Encryption failed: {e}")))?;
 
@@ -502,7 +495,7 @@ fn kyber_enc(pub_key: &[u8], data: &[u8], sym_alg_id: u8) -> Result<Vec<u8>, Box
     key_bytes.zeroize();
 
     // Encrypt the payload with symmetric encryption
-    let nonce = get_nonce();
+    let nonce = get_nonce()?;
     let ciphertext_payload =
         id_encrypt(sym_alg_id, secret_key.expose_secret(), &nonce, data, None).unwrap();
 
@@ -692,8 +685,8 @@ pub fn id_keypair_gen(
     bits: Option<usize>,
 ) -> Result<(Secret<Vec<u8>>, Vec<u8>), Box<dyn std::error::Error>> {
     match alg_id {
-        ECC_ID => Ok(ecc_key_gen()),
-        RSA_ID => Ok(rsa_key_gen(bits.unwrap_or(4096))),
+        ECC_ID => ecc_key_gen(),
+        RSA_ID => rsa_key_gen(bits.unwrap_or(4096)),
         KYBER_ID => kyber_key_gen(),
         DILITHIUM_ID => dilithium_key_gen(),
         _ => Err(format!("Unrecognized asymmetric key type: {}", alg_id).into()),
@@ -741,7 +734,7 @@ pub fn id_asym_enc(
                 sym_alg_id.ok_or("Missing symmetric algorithm ID for ECC encryption")?;
             ecc_enc(pub_key, data, sym_alg_id)
         }
-        RSA_ID => Ok(rsa_enc(pub_key, data)),
+        RSA_ID => rsa_enc(pub_key, data),
         KYBER_ID => {
             let sym_alg_id =
                 sym_alg_id.ok_or("Missing symmetric algorithm ID for Kyber encryption")?;
@@ -790,7 +783,7 @@ pub fn id_asym_dec(
                 sym_alg_id.ok_or("Missing symmetric algorithm ID for ECC decryption")?;
             ecc_dec(priv_key, ciphertext, sym_alg_id)
         }
-        RSA_ID => Ok(rsa_dec(priv_key, ciphertext)),
+        RSA_ID => rsa_dec(priv_key, ciphertext),
         KYBER_ID => {
             let sym_alg_id =
                 sym_alg_id.ok_or("Missing symmetric algorithm ID for Kyber decryption")?;
@@ -824,7 +817,7 @@ pub fn id_asym_dec(
 /// - Dilithium signatures use Dilithium2, a post-quantum digital signature scheme (CRYSTALS).
 pub fn id_sign(alg_id: u8, priv_key: &[u8], data: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
     match alg_id {
-        RSA_ID => Ok(rsa_sign(priv_key, data)),
+        RSA_ID => rsa_sign(priv_key, data),
         ECC_ID => ecdsa_sign(priv_key, data),
         DILITHIUM_ID => dilithium_sign(data, priv_key),
         _ => Err(format!("Unsupported signature algorithm ID: {}", alg_id).into()),

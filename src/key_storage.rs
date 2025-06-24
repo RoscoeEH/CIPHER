@@ -236,7 +236,7 @@ pub fn list_keys() -> Result<(), Box<dyn Error>> {
 
         // Try to deserialize as AsymKeyPair
         if let Ok(asym) = bincode::deserialize::<AsymKeyPair>(&value) {
-            let datetime = u64_to_datetime(asym.created);
+            let datetime = u64_to_datetime(asym.created)?;
             println!(
                 "- ID: {}\n  Type: {}\n  Created: {}\n  Public Key Length: {}\n",
                 asym.id,
@@ -249,7 +249,7 @@ pub fn list_keys() -> Result<(), Box<dyn Error>> {
 
         // Try to deserialize as SymKey
         if let Ok(sym) = bincode::deserialize::<SymKey>(&value) {
-            let datetime = u64_to_datetime(sym.created);
+            let datetime = u64_to_datetime(sym.created)?;
             println!(
                 "- ID: {}\n  Type: Symmetric (KDF ID {})\n  Created: {}\n  Use Count: {}\n",
                 sym.id, sym.derivation_method_id, datetime, sym.use_count,
@@ -281,7 +281,7 @@ pub fn list_keys() -> Result<(), Box<dyn Error>> {
 /// - The key store cannot be destroyed (e.g., path permissions issues (may implement this)).
 /// - The key store cannot be recreated.
 pub fn wipe_keystore() -> Result<(), Box<dyn Error>> {
-    let keystore_path = get_keystore_path();
+    let keystore_path = get_keystore_path()?;
 
     // Delete the existing keystore database
     DB::destroy(&Options::default(), &keystore_path)?;
@@ -517,7 +517,7 @@ pub fn list_unowned_public_keys() -> Result<(), Box<dyn std::error::Error>> {
         let (_key, value) = result?;
 
         if let Ok(unowned) = bincode::deserialize::<UnownedPublicKey>(&value) {
-            let datetime = u64_to_datetime(unowned.created);
+            let datetime = u64_to_datetime(unowned.created)?;
             println!(
                 "- ID: {}\n  Type: {}\n  Created: {}\n  Public Key Length: {}\n",
                 unowned.id,
@@ -549,7 +549,7 @@ pub fn list_unowned_public_keys() -> Result<(), Box<dyn std::error::Error>> {
 /// - The key store cannot be destroyed (e.g., path permissions issues (may implement this)).
 /// - The key store cannot be recreated.
 pub fn wipe_public_keystore() -> Result<(), Box<dyn Error>> {
-    let keystore_path = get_public_keystore_path();
+    let keystore_path = get_public_keystore_path()?;
 
     // Delete the existing keystore database
     DB::destroy(&Options::default(), &keystore_path)?;

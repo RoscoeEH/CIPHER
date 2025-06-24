@@ -141,7 +141,7 @@ pub trait Validatable {
 ///
 /// * Prints an error and exits the program if validation fails.
 /// * Continues execution silently if validation succeeds.
-pub fn validate_args<T: Validatable>(args: &T) {
+pub fn validate_args<T: Validatable>(args: &T) -> Result<(), Box<dyn std::error::Error>> {
     if let Err(e) = args.validate() {
         eprintln!("Invalid input: {}", e);
         if let Some(source) = e.source() {
@@ -149,6 +149,7 @@ pub fn validate_args<T: Validatable>(args: &T) {
         }
         std::process::exit(1);
     }
+    Ok(())
 }
 
 // Command-line interface definition for the `cipher` application.
@@ -318,7 +319,7 @@ impl Validatable for ProfileArgs {
 
         let profile = match get_profile(&id)? {
             Some(p) => p,
-            None => get_new_profile(id.clone()),
+            None => get_new_profile(id.clone())?,
         };
 
         // Checks appropriate values for parameters

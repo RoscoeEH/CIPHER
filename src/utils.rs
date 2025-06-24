@@ -31,7 +31,6 @@ use std::env;
 use std::error::Error;
 use std::fs::File;
 use std::io::{self, Read, Write};
-use std::panic;
 use std::process::exit;
 
 // === String/int convertions ===
@@ -100,7 +99,7 @@ pub fn alg_id_to_name(id: u8) -> &'static str {
 pub fn parse_u32_or_exit(field: &str, value: &str) -> u32 {
     value.parse::<u32>().unwrap_or_else(|_| {
         eprintln!("Invalid number for '{}'", field);
-        exit(0);
+        exit(1);
     })
 }
 
@@ -256,29 +255,32 @@ pub struct DerivedKeyInfo {
 ///
 /// # Panics
 /// Panics if the specified or resolved KDF ID is unsupported, or if password input fails.
-pub fn generate_key_from_args(args: &EncryptArgs, profile: &UserProfile) -> DerivedKeyInfo {
+pub fn generate_key_from_args(
+    args: &EncryptArgs,
+    profile: &UserProfile,
+) -> Result<DerivedKeyInfo, Box<dyn std::error::Error>> {
     let kdf_id = match args.kdf {
         Some(ref s) => alg_name_to_id(s.as_str()).unwrap(),
         None => profile.kdf_id,
     };
 
-    let password = get_password(true, Some(true));
-    let salt = get_salt(); // Vec<u8>
+    let password = get_password(true, Some(true))?;
+    let salt = get_salt()?; // Vec<u8>
 
     let key = match kdf_id {
         ARGON2_ID => id_derive_key(kdf_id, password, &salt, SYM_KEY_LEN, &profile.params),
         PBKDF2_ID => id_derive_key(kdf_id, password, &salt, SYM_KEY_LEN, &profile.params),
         _ => {
-            panic!("Unsupported KDF algorithm ID: {}", kdf_id);
+            return Err(format!("Unsupported KDF algorithm ID: {}", kdf_id).into());
         }
-    };
+    }?;
 
-    DerivedKeyInfo {
+    Ok(DerivedKeyInfo {
         kdf_id,
         key,
         salt,
         params: profile.params.clone(),
-    }
+    })
 }
 
 /// Derives a symmetric encryption key from stored metadata and user-provided password.
@@ -302,16 +304,16 @@ pub fn generate_key_from_args(args: &EncryptArgs, profile: &UserProfile) -> Deri
 pub fn derive_key_from_stored(
     sym_key: &mut SymKey,
     password: Secret<String>,
-) -> Result<DerivedKeyInfo, String> {
+) -> Result<DerivedKeyInfo, Box<dyn std::error::Error>> {
     let derived = id_derive_key(
         sym_key.derivation_method_id,
         password,
         &sym_key.salt,
         SYM_KEY_LEN,
         &sym_key.derivation_params,
-    );
+    )?;
 
-    let derived_hash = hash(&derived.expose_secret());
+    let derived_hash = hash(&derived.expose_secret())?;
     if derived_hash[..] != sym_key.verification_hash[..] {
         return Err("Key verification failed".into());
     }
@@ -365,7 +367,7 @@ pub fn gen_asym_key(
 
     let (priv_key, pub_key) = id_keypair_gen(alg_id, Some(bits)).unwrap();
 
-    let kek_salt_bytes = get_salt();
+    let kek_salt_bytes = get_salt()?;
     // Fix how profiles store params first
     let kek = id_derive_key(
         profile.kdf_id,
@@ -382,7 +384,7 @@ pub fn gen_asym_key(
         private_key: id_encrypt(
             profile.aead_alg_id,
             &kek.expose_secret(),
-            &get_nonce(),
+            &get_nonce()?,
             &priv_key.expose_secret(),
             None,
         )
@@ -423,7 +425,7 @@ pub fn gen_sym_key(
     profile_id: String,
     name: String,
 ) -> Result<(), Box<dyn Error>> {
-    let salt_vec = get_salt();
+    let salt_vec = get_salt()?;
     let profile = match get_profile(profile_id.as_str()).unwrap() {
         Some(p) => p,
         None => init_profile().unwrap(),
@@ -435,7 +437,7 @@ pub fn gen_sym_key(
         salt: salt_vec,
         derivation_method_id: profile.kdf_id,
         derivation_params: params.clone(),
-        verification_hash: hash(&key.expose_secret()),
+        verification_hash: hash(&key.expose_secret())?,
         created: now_as_u64(),
         use_count: 0,
     };
@@ -549,7 +551,7 @@ pub fn get_unowned_or_owned_public_key(
 /// Specifically, it could fail if the key derivation or symmetric decryption process fails.
 pub fn decrypt_private_key(keypair: &AsymKeyPair) -> Result<Secret<Vec<u8>>, Box<dyn Error>> {
     // Prompt for password
-    let kek_password = get_password(false, Some(false));
+    let kek_password = get_password(false, Some(false))?;
 
     // Derive KEK using stored parameters
     let kek = id_derive_key(
@@ -558,7 +560,7 @@ pub fn decrypt_private_key(keypair: &AsymKeyPair) -> Result<Secret<Vec<u8>>, Box
         &keypair.kek_salt,
         SYM_KEY_LEN,
         &keypair.kek_params,
-    );
+    )?;
 
     // Decrypt the stored private key
     let decrypted = id_decrypt(
@@ -600,7 +602,7 @@ pub fn build_asym_encrypted_blob(
     key: &PublicKeyEntry,
     filename: &str,
     plaintext: &[u8],
-) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+) -> Result<Vec<u8>, Box<dyn Error>> {
     let pub_key = key.public_key();
 
     let data_to_encrypt = plaintext.to_vec();
@@ -650,7 +652,7 @@ pub fn build_asym_encrypted_blob(
 ///   - Error reading the algorithm IDs or key ID,
 ///   - Failure to retrieve the private key from the key storage,
 ///   - Decryption failure, including if the filename length exceeds the decrypted content size.
-pub fn decrypt_asym_blob(blob: &[u8]) -> Result<(Vec<u8>, Vec<u8>), Box<dyn std::error::Error>> {
+pub fn decrypt_asym_blob(blob: &[u8]) -> Result<(Vec<u8>, Vec<u8>), Box<dyn Error>> {
     let mut cursor = std::io::Cursor::new(blob);
 
     // Check header
@@ -728,7 +730,7 @@ pub fn decrypt_asym_blob(blob: &[u8]) -> Result<(Vec<u8>, Vec<u8>), Box<dyn std:
 ///   - Failure in reading or processing KDF parameters or salt,
 ///   - Decryption failure,
 ///   - Corrupted data, where the filename length exceeds the size of the decrypted content.
-pub fn decrypt_sym_blob(blob: &[u8]) -> Result<(Vec<u8>, String), Box<dyn std::error::Error>> {
+pub fn decrypt_sym_blob(blob: &[u8]) -> Result<(Vec<u8>, String), Box<dyn Error>> {
     let mut cursor = std::io::Cursor::new(blob);
 
     let mut magic = [0u8; 4];
@@ -799,8 +801,8 @@ pub fn decrypt_sym_blob(blob: &[u8]) -> Result<(Vec<u8>, String), Box<dyn std::e
     cursor.read_to_end(&mut ciphertext)?;
 
     // Derive key
-    let password = get_password(false, Some(true));
-    let key = id_derive_key(kdf_id, password, &salt, SYM_KEY_LEN, &params);
+    let password = get_password(false, Some(true))?;
+    let key = id_derive_key(kdf_id, password, &salt, SYM_KEY_LEN, &params)?;
 
     let plaintext_with_filename =
         id_decrypt(aead_id, &key.expose_secret(), &ciphertext, Some(&aad)).unwrap();
@@ -846,7 +848,7 @@ pub fn encrypt_sym_blob(
     plaintext: &[u8],
     filename_len: u16,
 ) -> Result<Vec<u8>, Box<dyn Error>> {
-    let nonce = get_nonce();
+    let nonce = get_nonce()?;
 
     // === Construct header in memory
     let mut header = Vec::new();
@@ -936,7 +938,7 @@ pub fn build_signed_blob(
     // Sign header+data
     let mut signed_blob = header.clone();
     signed_blob.extend_from_slice(data);
-    let data_hash = hash(&signed_blob);
+    let data_hash = hash(&signed_blob)?;
     let signature = id_sign(alg_id, decrypted_priv.expose_secret(), &data_hash)?;
 
     // Output full blob
@@ -963,7 +965,7 @@ pub fn build_signed_blob(
 ///   - Invalid magic value in the header,
 ///   - Inconsistent blob length compared to the header's data length,
 ///   - Failure to find or verify the public key for the signature.
-pub fn verify_signature(raw: &[u8]) -> Result<bool, Box<dyn std::error::Error>> {
+pub fn verify_signature(raw: &[u8]) -> Result<bool, Box<dyn Error>> {
     let mut cursor = std::io::Cursor::new(raw);
 
     let mut magic = [0u8; 4];
@@ -1008,7 +1010,7 @@ pub fn verify_signature(raw: &[u8]) -> Result<bool, Box<dyn std::error::Error>> 
     // Fully parsed blocks here
     let signed_blob = &raw[..data_end];
     let signature = &raw[data_end..];
-    let data_hash = hash(signed_blob);
+    let data_hash = hash(signed_blob)?;
 
     let pub_key_option = get_unowned_or_owned_public_key(&key_id, false);
     match pub_key_option {
@@ -1044,7 +1046,7 @@ pub fn verify_signature(raw: &[u8]) -> Result<bool, Box<dyn std::error::Error>> 
 /// Possible errors include:
 ///   - Invalid magic value in the header (should be either `SIG1` or `SIG2`),
 ///   - Inconsistent blob length compared to the header's data length.
-pub fn strip_signature_blob(raw: &[u8]) -> Result<(Vec<u8>, Vec<u8>), Box<dyn std::error::Error>> {
+pub fn strip_signature_blob(raw: &[u8]) -> Result<(Vec<u8>, Vec<u8>), Box<dyn Error>> {
     let mut cursor = std::io::Cursor::new(raw);
 
     // Magic should be some SIGi
@@ -1099,8 +1101,8 @@ pub fn strip_signature_blob(raw: &[u8]) -> Result<(Vec<u8>, Vec<u8>), Box<dyn st
 ///
 /// # Returns
 /// * A `Vec<u8>` containing the 32-byte SHA-256 digest.
-pub fn hash(data: &[u8]) -> Vec<u8> {
+pub fn hash(data: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
     let mut hasher = Sha256::new();
     hasher.update(data);
-    hasher.finalize().to_vec()
+    Ok(hasher.finalize().to_vec())
 }

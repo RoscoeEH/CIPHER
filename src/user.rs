@@ -226,7 +226,7 @@ pub fn list_profiles() -> Result<(), Box<dyn std::error::Error>> {
 /// * `Ok(())` on successful wipe and reinitialization.
 /// * `Err` if there is an error destroying or reopening the database.
 pub fn wipe_profiles() -> Result<(), Box<dyn Error>> {
-    let db_path = get_db_path();
+    let db_path = get_db_path()?;
 
     DB::destroy(&Options::default(), &db_path)?;
     DB::open_default(&db_path)?;

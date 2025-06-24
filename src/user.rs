@@ -25,26 +25,24 @@ use crate::constants::*;
 use crate::utils::alg_id_to_name;
 
 // Enables storage of profiles in the application
-fn get_db_path() -> PathBuf {
+fn get_db_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
     let db_dir = if cfg!(debug_assertions) {
-        // Dev path
         PathBuf::from("./profiles")
     } else {
-        // Production path
         let project_dirs = ProjectDirs::from("com", "cipher", "cipher")
-            .expect("Could not determine project directories");
+            .ok_or_else(|| "Could not determine project directories".to_string())?;
         project_dirs.data_local_dir().join("profiles")
     };
 
-    std::fs::create_dir_all(&db_dir).expect("Failed to create DB directory");
-    db_dir
+    std::fs::create_dir_all(&db_dir)?;
+    Ok(db_dir)
 }
 
-// RocksDB database for storing profiles
 lazy_static! {
     static ref PROFILES_DB: Mutex<DB> = {
-        let path = get_db_path();
-        Mutex::new(DB::open_default(path).unwrap())
+        let path = get_db_path().expect("Failed to get DB path");
+        let db = DB::open_default(path).expect("Failed to open RocksDB");
+        Mutex::new(db)
     };
 }
 
@@ -165,11 +163,11 @@ pub fn init_profile() -> Result<UserProfile, Box<dyn std::error::Error>> {
 ///
 /// # Panics
 /// Panics if the default profile cannot be initialized or if storing the new profile fails.
-pub fn get_new_profile(new_id: String) -> UserProfile {
+pub fn get_new_profile(new_id: String) -> Result<UserProfile, Box<dyn std::error::Error>> {
     let mut base_profile = init_profile().unwrap();
     base_profile.id = new_id;
-    set_profile(&base_profile).expect("Failed to save profile");
-    base_profile
+    set_profile(&base_profile)?;
+    Ok(base_profile)
 }
 
 /// Lists all stored user profiles from the profile database.

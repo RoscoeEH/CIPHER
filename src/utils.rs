@@ -31,7 +31,6 @@ use std::env;
 use std::error::Error;
 use std::fs::File;
 use std::io::{self, Read, Write};
-use std::process::exit;
 
 // === String/int convertions ===
 
@@ -96,11 +95,10 @@ pub fn alg_id_to_name(id: u8) -> &'static str {
 /// # Panics
 /// This function does not panic, but it will terminate the program with a message
 /// if parsing fails.
-pub fn parse_u32_or_exit(field: &str, value: &str) -> u32 {
-    value.parse::<u32>().unwrap_or_else(|_| {
-        eprintln!("Invalid number for '{}'", field);
-        exit(1);
-    })
+pub fn parse_u32(field: &str, value: &str) -> Result<u32, Box<dyn std::error::Error>> {
+    value
+        .parse::<u32>()
+        .map_err(|e| format!("Invalid number for '{}': {}", field, e).into())
 }
 
 // === Time helpers ===
@@ -146,7 +144,7 @@ pub fn u64_to_datetime(ts: u64) -> Result<DateTime<Utc>, String> {
 pub fn get_password(
     verify: bool,
     is_sym_key: Option<bool>,
-) -> Result<Secret<String>, Box<dyn std::error::Error>> {
+) -> Result<Secret<String>, Box<dyn Error>> {
     // If TESTING env var is set, return "password" directly
     if env::var("TESTING").is_ok() {
         return Ok(Secret::new("password".to_string()));
@@ -164,8 +162,7 @@ pub fn get_password(
         println!("Re-enter password: ");
         let verify_password = Secret::new(read_password()?);
         if verify_password.expose_secret() != password.expose_secret() {
-            println!("The passwords did not match.");
-            exit(0); // Changed from panic for nicer error messages
+            return Err("The passwords did not match.".into());
         }
     }
 
@@ -206,19 +203,20 @@ pub fn read_file(path: &str) -> Result<Vec<u8>, Box<dyn Error>> {
 ///
 /// # Panics
 /// Panics if writing to stdout or reading from stdin fails.
-pub fn warn_user_or_exit(message: &str) {
+pub fn warn_user(message: &str) -> Result<(), Box<dyn std::error::Error>> {
     print!("{} [y/N]: ", message);
-    io::stdout().flush().unwrap();
+    io::stdout().flush()?;
 
     let mut input = String::new();
-    io::stdin().read_line(&mut input).unwrap();
+    io::stdin().read_line(&mut input)?;
 
     if !input.trim().eq_ignore_ascii_case("y") {
         println!("Cancelled");
-        exit(0);
+        return Err("Operation cancelled by user.".into());
     }
-}
 
+    Ok(())
+}
 // === Key use helpers ===
 
 /// Contains metadata and material for a derived cryptographic key.
@@ -509,18 +507,16 @@ pub fn get_unowned_or_owned_public_key(
         Some(k) => PublicKeyEntry::Unowned(k),
         None => {
             if !quiet {
-                warn_user_or_exit(&format!(
-                "Could not find unowned public key with ID: {}. Would you like to try an owned key?",
-                key_id
-            ))
-            };
+                warn_user(&format!(
+                    "Could not find unowned public key with ID: {}. Would you like to try an owned key?",
+                    key_id
+                ))?;
+            }
 
-            // Try getting owned key of the expected type (AsymKeyPair)
             match get_key::<AsymKeyPair>(&key_id) {
                 Ok(Some(keypair)) => PublicKeyEntry::Owned(keypair),
                 Ok(None) => return Ok(None), // Key not found
                 Err(e) => {
-                    // If it's a type mismatch error (e.g., found SymKey instead of AsymKeyPair), return None
                     if e.to_string().contains("expected type `AsymKeyPair`") {
                         return Ok(None);
                     } else {

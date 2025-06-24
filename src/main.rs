@@ -16,7 +16,6 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::panic;
 use std::path::PathBuf;
-use std::process::exit;
 
 pub mod asymmetric_crypto;
 pub mod constants;
@@ -225,9 +224,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if valid_sig {
                     println!("Signature verified!")
                 } else {
-                    utils::warn_user_or_exit(
-                        "Unrecognized signature. Would you like to decrypt anyway?",
-                    );
+                    utils::warn_user("Unrecognized signature. Would you like to decrypt anyway?")?;
                 }
                 let (_, encrypted_unsigned_data) = utils::strip_signature_blob(&blob)?;
                 blob = encrypted_unsigned_data;
@@ -291,28 +288,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // find the thing to update
             match args.update_field.as_str() {
-                "aead" => match utils::alg_name_to_id(&args.value) {
-                    Ok(id) => profile.aead_alg_id = id,
-                    Err(e) => {
-                        eprintln!("Invalid aead_alg_id: {}", e);
-                        std::process::exit(1);
-                    }
-                },
+                "aead" => {
+                    let id = utils::alg_name_to_id(&args.value)
+                        .map_err(|e| format!("Invalid aead_alg_id: {}", e))?;
+                    profile.aead_alg_id = id;
+                }
 
-                "kdf" => match utils::alg_name_to_id(&args.value) {
-                    Ok(id) => profile.kdf_id = id,
-                    Err(e) => {
-                        eprintln!("Invalid kdf_id: {}", e);
-                        std::process::exit(1);
-                    }
-                },
+                "kdf" => {
+                    let id = utils::alg_name_to_id(&args.value)
+                        .map_err(|e| format!("Invalid kdf_id: {}", e))?;
+                    profile.kdf_id = id;
+                }
+
                 "memory_cost" | "time_cost" | "parallelism" | "iterations" => {
-                    let number = utils::parse_u32_or_exit(&args.update_field, &args.value);
+                    let number =
+                        utils::parse_u32(&args.update_field, &args.value).map_err(|e| {
+                            format!("Invalid value for '{}': {}", &args.update_field, e)
+                        })?;
                     profile.params.insert(args.update_field.clone(), number);
                 }
+
                 field => {
-                    eprintln!("Unknown field '{}'. No changes made.", field);
-                    std::process::exit(1);
+                    return Err(format!("Unknown field '{}'. No changes made.", field).into());
                 }
             }
 
@@ -331,10 +328,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Avoid overwriting keys
             if key_storage::does_key_exist(&args.id)? {
-                utils::warn_user_or_exit(&format!(
+                utils::warn_user(&format!(
                     "There is already a key with the id: {}. Overwrite?",
                     args.id
-                ));
+                ))?;
             }
 
             // Proceed with key generation
@@ -369,9 +366,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 args.wipe_profiles = true;
                 args.wipe_unowned_keys = true;
             }
-            utils::warn_user_or_exit(
+            utils::warn_user(
                 "Are you sure you want to wipe all data? This action cannot be undone.",
-            );
+            )?;
 
             if args.wipe_profiles {
                 user::wipe_profiles()?;
@@ -469,8 +466,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )?;
 
             if !utils::verify_signature(&raw)? {
-                println!("Signature verification failed");
-                exit(0);
+                return Err("Signature verification failed".into());
             }
 
             println!("Signature verified.");
@@ -525,16 +521,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Avoid overwriting
             if key_storage::does_public_key_exist(&key_id)? {
-                utils::warn_user_or_exit(
+                utils::warn_user(
                     format!(
                         "There is already a key with ID: {}. Would you like to overwrite?",
                         key_id
                     )
                     .as_str(),
-                )
+                )?
             }
             key_storage::import_key(&key, args.name)?;
-            println!("Public key imported successfully")
+            println!("Public key imported successfully");
         }
     }
     Ok(())

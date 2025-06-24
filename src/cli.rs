@@ -143,11 +143,11 @@ pub trait Validatable {
 /// * Continues execution silently if validation succeeds.
 pub fn validate_args<T: Validatable>(args: &T) -> Result<(), Box<dyn std::error::Error>> {
     if let Err(e) = args.validate() {
-        eprintln!("Invalid input: {}", e);
+        let mut msg = format!("Invalid input: {}", e);
         if let Some(source) = e.source() {
-            eprintln!("Caused by: {}", source);
+            msg.push_str(&format!("\nCaused by: {}", source));
         }
-        std::process::exit(1);
+        return Err(msg.into());
     }
     Ok(())
 }

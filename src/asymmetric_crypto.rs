@@ -237,6 +237,13 @@ fn ecc_key_gen() -> Result<(Secret<Vec<u8>>, Vec<u8>), Box<dyn std::error::Error
     Ok((private_key, public_key))
 }
 
+use p256::{
+    ecdh::EphemeralSecret, elliptic_curve::sec1::EncodedPoint, pkcs8::DecodePublicKey,
+    PublicKey as P256PublicKey,
+};
+use rand_core::OsRng;
+use secrecy::{ExposeSecret, Secret};
+use sha2::{Digest, Sha256};
 /// Encrypts data using ECC-based hybrid encryption with the NIST P-256 curve.
 ///
 /// This function performs an ephemeral ECDH key exchange using the recipient's
@@ -263,37 +270,38 @@ fn ecc_key_gen() -> Result<(Secret<Vec<u8>>, Vec<u8>), Box<dyn std::error::Error
 /// - The provided public key is not valid SEC1-encoded format.
 /// - The key derivation digest output is not 32 bytes.
 fn ecc_enc(pub_key: &[u8], data: &[u8], sym_alg_id: u8) -> Result<Vec<u8>, Box<dyn Error>> {
-    let encoded_point =
-        EncodedPoint::<p256::NistP256>::from_bytes(pub_key).expect("Invalid SEC1 public key bytes");
+    let encoded_point = EncodedPoint::<p256::NistP256>::from_bytes(pub_key)
+        .map_err(|_| "Invalid SEC1 public key bytes")?;
 
-    let public_key =
-        P256PublicKey::from_encoded_point(&encoded_point).expect("Invalid encoded point for P256");
+    let public_key = P256PublicKey::from_encoded_point(&encoded_point)
+        .into_option()
+        .ok_or("Invalid encoded point for P256")?;
 
     // Ephemeral ECDH key exchange
     let ephemeral = EphemeralSecret::random(&mut OsRng); // Zeroizes on drop
     let shared_secret = ephemeral.diffie_hellman(&public_key); // Zeroizes on drop
 
     // Derive symmetric key securely
-    let mut digest = Sha256::digest(shared_secret.raw_secret_bytes());
+    let digest = Sha256::digest(shared_secret.raw_secret_bytes());
 
-    // Convert the digest into a [u8; 32]
+    // Convert digest to [u8; 32]
     let mut key_bytes: [u8; 32] = digest
         .as_slice()
         .try_into()
-        .expect("Digest output is not 32 bytes");
+        .map_err(|_| "Digest output is not 32 bytes")?;
 
     let secret_key = Secret::new(key_bytes);
-    digest.zeroize();
     key_bytes.zeroize();
 
     // Encrypt data
     let nonce = get_nonce();
-    let ciphertext = id_encrypt(sym_alg_id, secret_key.expose_secret(), &nonce, data, None);
+    let ciphertext = id_encrypt(sym_alg_id, secret_key.expose_secret(), &nonce, data, None)
+        .map_err(|e| Box::<dyn Error>::from(format!("Encryption failed: {e}")))?;
 
     // Prepend ephemeral public key
     let eph_pub = p256::PublicKey::from(&ephemeral);
     let mut result = eph_pub.to_encoded_point(false).as_bytes().to_vec();
-    result.extend_from_slice(&ciphertext.unwrap());
+    result.extend_from_slice(&ciphertext);
 
     Ok(result)
 }
@@ -346,10 +354,7 @@ fn ecc_dec(
     let raw_secret = shared_secret.raw_secret_bytes();
     let mut digest = Sha256::digest(&raw_secret);
 
-    let mut key_bytes: [u8; 32] = digest
-        .as_slice()
-        .try_into()
-        .expect("Digest output is not 32 bytes");
+    let mut key_bytes: [u8; 32] = digest.as_slice().try_into()?;
 
     let secret_key = Secret::new(key_bytes);
     digest.zeroize();
@@ -416,21 +421,25 @@ fn ecdsa_sign(priv_key: &[u8], data: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
 /// # Panics
 ///
 /// This function panics if the public key bytes cannot be parsed into a valid SEC1 point.
-fn ecdsa_verify(pub_key: &[u8], data: &[u8], sig_bytes: &[u8]) -> Result<(), p256::ecdsa::Error> {
-    let encoded_point =
-        EncodedPoint::<p256::NistP256>::from_bytes(pub_key).expect("Invalid SEC1 public key bytes");
+fn ecdsa_verify(pub_key: &[u8], data: &[u8], sig_bytes: &[u8]) -> Result<(), Box<dyn Error>> {
+    let encoded_point = EncodedPoint::<p256::NistP256>::from_bytes(pub_key)
+        .map_err(|e| format!("Invalid SEC1 public key bytes: {e}"))?;
 
-    let public_key =
-        P256PublicKey::from_encoded_point(&encoded_point).expect("Invalid encoded point for P256");
+    let public_key = P256PublicKey::from_encoded_point(&encoded_point)
+        .into_option()
+        .ok_or("Invalid encoded point for P256")?;
 
-    // Convert to verifying key
-    let verifying_key = EcdsaVerifyingKey::from(public_key.clone());
+    let verifying_key = EcdsaVerifyingKey::from(public_key);
 
-    let signature = EcdsaSignature::from_der(sig_bytes)?;
+    let signature = EcdsaSignature::from_der(sig_bytes)
+        .map_err(|e| format!("Failed to parse DER signature: {e}"))?;
 
-    verifying_key.verify(data, &signature)
+    verifying_key
+        .verify(data, &signature)
+        .map_err(|e| format!("Signature verification failed: {e}"))?;
+
+    Ok(())
 }
-
 // === kyber ===
 
 /// Generates a new Kyber512 public/private keypair.
@@ -486,10 +495,7 @@ fn kyber_enc(pub_key: &[u8], data: &[u8], sym_alg_id: u8) -> Result<Vec<u8>, Box
     // Hash the shared secret to derive symmetric key
     let mut digest = Sha256::digest(shared_secret.as_bytes());
 
-    let mut key_bytes: [u8; 32] = digest
-        .as_slice()
-        .try_into()
-        .expect("Digest output is not 32 bytes");
+    let mut key_bytes: [u8; 32] = digest.as_slice().try_into()?;
 
     let secret_key = Secret::new(key_bytes);
     digest.zeroize();
@@ -552,10 +558,7 @@ fn kyber_dec(
     // Derive symmetric key
     let mut digest = Sha256::digest(shared_secret.as_bytes());
 
-    let mut key_bytes: [u8; 32] = digest
-        .as_slice()
-        .try_into()
-        .expect("Digest output is not 32 bytes");
+    let mut key_bytes: [u8; 32] = digest.as_slice().try_into()?;
 
     let secret_key = Secret::new(key_bytes);
     digest.zeroize();
@@ -870,111 +873,99 @@ pub fn id_verify(
 mod tests {
     use super::*;
     #[test]
-    fn test_rsa_enc_dec_kat() {
-        let plaintext = b"Test vector: RSA encryption works!";
+    fn test_rsa_enc_dec_kat() -> Result<(), Box<dyn std::error::Error>> {
+        let plaintext = b"Test vector: RSA encryption test";
         let key_bits = 2048;
 
         // Generate RSA keypair
-        let (priv_key, pub_key) = rsa_key_gen(key_bits);
+        let (priv_key, pub_key) = rsa_key_gen(key_bits)?;
 
         // Encrypt
-        let ciphertext = rsa_enc(&pub_key, plaintext);
+        let ciphertext = rsa_enc(&pub_key, plaintext)?;
 
         // Decrypt
-        let decrypted = rsa_dec(&priv_key.expose_secret(), &ciphertext);
+        let decrypted = rsa_dec(&priv_key.expose_secret(), &ciphertext)?;
 
         // Verify the output matches input
         assert_eq!(
             decrypted, plaintext,
             "Decrypted data does not match original"
         );
+
+        Ok(())
     }
     #[test]
-    fn test_rsa_sign_verify_kat() {
-        let message = b"Test vector: RSA signing works!";
-        // Generate RSA keypair
-        let (priv_key_der, pub_key_der) = rsa_key_gen(2048); // Should return (Vec<u8>, Vec<u8>)
+    fn test_rsa_sign_verify_kat() -> Result<(), Box<dyn std::error::Error>> {
+        let message = b"Test vector: RSA signing test";
+        let (priv_key_der, pub_key_der) = rsa_key_gen(2048)?;
 
-        // Sign
-        let signature = rsa_sign(&priv_key_der.expose_secret(), message);
+        let signature = rsa_sign(&priv_key_der.expose_secret(), message)?;
 
-        // Verify
-        let result = rsa_verify(&pub_key_der, message, &signature);
-        assert!(result.is_ok(), "RSA signature verification failed");
+        rsa_verify(&pub_key_der, message, &signature)?;
+
+        Ok(())
     }
 
     #[test]
-    fn test_ecc_enc_dec_kat() {
-        let sym_alg_id = AES_GCM_ID; // Tests with aes-gcm
-        let plaintext = b"Test vector: ECC encryption works!";
+    fn test_ecc_enc_dec_kat() -> Result<(), Box<dyn std::error::Error>> {
+        let sym_alg_id = AES_GCM_ID;
+        let plaintext = b"Test vector: ECC encryption test";
 
-        // Generate keypair
-        let (priv_key, pub_key) = ecc_key_gen();
+        let (priv_key, pub_key) = ecc_key_gen()?;
 
-        // Encrypt
-        let ciphertext = ecc_enc(&pub_key, plaintext, sym_alg_id).expect("ECC encryption failed");
+        let ciphertext = ecc_enc(&pub_key, plaintext, sym_alg_id)?;
 
-        // Decrypt
-        let decrypted = ecc_dec(&priv_key.expose_secret(), &ciphertext, sym_alg_id)
-            .expect("ECC decryption failed");
+        let decrypted = ecc_dec(&priv_key.expose_secret(), &ciphertext, sym_alg_id)?;
 
-        // Verify the output matches input
         assert_eq!(
             decrypted, plaintext,
             "Decrypted data does not match original"
         );
+
+        Ok(())
     }
+
     #[test]
-    fn test_ecdsa_sign_verify_kat() {
-        let message = b"Test vector: ECDSA signing works!";
-        // Generate keypair
-        let (priv_key_der, pub_key_sec1) = ecc_key_gen(); // Should return (Vec<u8>, Vec<u8>)
+    fn test_ecdsa_sign_verify_kat() -> Result<(), Box<dyn std::error::Error>> {
+        let message = b"Test vector: ECDSA signing test";
+        let (priv_key_der, pub_key_sec1) = ecc_key_gen()?;
 
-        // Sign
-        let signature =
-            ecdsa_sign(&priv_key_der.expose_secret(), message).expect("ECDSA signing failed");
+        let signature = ecdsa_sign(&priv_key_der.expose_secret(), message)?;
 
-        // Verify
-        let result = ecdsa_verify(&pub_key_sec1, message, &signature);
-        assert!(result.is_ok(), "ECDSA signature verification failed");
+        ecdsa_verify(&pub_key_sec1, message, &signature)?;
+
+        Ok(())
     }
+
     #[test]
-    fn test_kyber_enc_dec_kat() {
-        let plaintext = b"Test vector: Kyber encryption works!";
-        let sym_alg_id = AES_GCM_ID; //
+    fn test_kyber_enc_dec_kat() -> Result<(), Box<dyn std::error::Error>> {
+        let plaintext = b"Test vector: Kyber encryption test";
+        let sym_alg_id = AES_GCM_ID;
 
-        // Generate Kyber keypair
-        let (secret_key_bytes, public_key_bytes) = kyber_key_gen().expect("Keypair gen failed");
+        let (secret_key_bytes, public_key_bytes) = kyber_key_gen()?;
 
-        // Encrypt using Kyber-based ECIES
-        let ciphertext =
-            kyber_enc(&public_key_bytes, plaintext, sym_alg_id).expect("Kyber encryption failed");
+        let ciphertext = kyber_enc(&public_key_bytes, plaintext, sym_alg_id)?;
 
-        // Decrypt using Kyber-based ECIES
-        let decrypted = kyber_dec(&secret_key_bytes.expose_secret(), &ciphertext, sym_alg_id)
-            .expect("Kyber decryption failed");
+        let decrypted = kyber_dec(&secret_key_bytes.expose_secret(), &ciphertext, sym_alg_id)?;
 
-        // Validate that the decrypted text matches the original
         assert_eq!(
             decrypted, plaintext,
             "Kyber decrypted data does not match original"
         );
+
+        Ok(())
     }
+
     #[test]
-    fn test_dilithium_sign_verify_kat() {
-        let message = b"Test vector: Dilithium signing works!";
+    fn test_dilithium_sign_verify_kat() -> Result<(), Box<dyn std::error::Error>> {
+        let message = b"Test vector: Dilithium signing test";
 
-        // Generate Dilithium keypair
-        let (secret_key_bytes, public_key_bytes) =
-            dilithium_key_gen().expect("Keypair generation failed");
+        let (secret_key_bytes, public_key_bytes) = dilithium_key_gen()?;
 
-        // Sign the message
-        let signature =
-            dilithium_sign(message, &secret_key_bytes.expose_secret()).expect("Signing failed");
+        let signature = dilithium_sign(message, &secret_key_bytes.expose_secret())?;
 
-        // Verify the signature
-        let result = dilithium_verify(&public_key_bytes, message, &signature);
+        dilithium_verify(&public_key_bytes, message, &signature)?;
 
-        assert!(result.is_ok(), "Dilithium signature verification failed");
+        Ok(())
     }
 }

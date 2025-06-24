@@ -144,10 +144,13 @@ pub fn u64_to_datetime(ts: u64) -> Result<DateTime<Utc>, String> {
 ///
 /// # Exits
 /// Exits the process with status 0 if password verification fails.
-pub fn get_password(verify: bool, is_sym_key: Option<bool>) -> Secret<String> {
+pub fn get_password(
+    verify: bool,
+    is_sym_key: Option<bool>,
+) -> Result<Secret<String>, Box<dyn std::error::Error>> {
     // If TESTING env var is set, return "password" directly
     if env::var("TESTING").is_ok() {
-        return Secret::new("password".to_string());
+        return Ok(Secret::new("password".to_string()));
     }
 
     match is_sym_key {
@@ -156,18 +159,18 @@ pub fn get_password(verify: bool, is_sym_key: Option<bool>) -> Secret<String> {
         None => println!("Enter password: "),
     };
 
-    let password = Secret::new(read_password().expect("rpassword failure".into()));
+    let password = Secret::new(read_password()?);
 
     if verify {
         println!("Re-enter password: ");
-        let verify_password = Secret::new(read_password().expect("rpassword failure".into()));
+        let verify_password = Secret::new(read_password()?);
         if verify_password.expose_secret() != password.expose_secret() {
             println!("The passwords did not match.");
             exit(0); // Changed from panic for nicer error messages
         }
     }
 
-    password
+    Ok(password)
 }
 
 /// Reads the entire contents of a file into a byte vector.
@@ -370,7 +373,7 @@ pub fn gen_asym_key(
         &kek_salt_bytes,
         SYM_KEY_LEN,
         &profile.params,
-    );
+    )?;
 
     let keypair_to_store = AsymKeyPair {
         id: name,
@@ -390,7 +393,7 @@ pub fn gen_asym_key(
         kek_aead: profile.aead_alg_id,
         created: now_as_u64(),
     };
-    store_key(&keypair_to_store).expect("Failed to store keypair");
+    store_key(&keypair_to_store)?;
     Ok(())
 }
 
@@ -426,7 +429,7 @@ pub fn gen_sym_key(
         None => init_profile().unwrap(),
     };
     let params: HashMap<String, u32> = profile.params;
-    let key = id_derive_key(profile.kdf_id, password, &salt_vec, SYM_KEY_LEN, &params);
+    let key = id_derive_key(profile.kdf_id, password, &salt_vec, SYM_KEY_LEN, &params)?;
     let key_to_store = SymKey {
         id: name,
         salt: salt_vec,
@@ -437,7 +440,7 @@ pub fn gen_sym_key(
         use_count: 0,
     };
 
-    store_key(&key_to_store).expect("Failed to store key");
+    store_key(&key_to_store)?;
     Ok(())
 }
 
@@ -498,8 +501,7 @@ pub fn get_unowned_or_owned_public_key(
     key_id: &str,
     quiet: bool,
 ) -> Result<Option<PublicKeyEntry>, Box<dyn Error>> {
-    let public_key =
-        get_unowned_public_key(&key_id).expect("Failed to check for unowned public key.");
+    let public_key = get_unowned_public_key(&key_id)?;
 
     let key_entry = match public_key {
         Some(k) => PublicKeyEntry::Unowned(k),
@@ -935,8 +937,7 @@ pub fn build_signed_blob(
     let mut signed_blob = header.clone();
     signed_blob.extend_from_slice(data);
     let data_hash = hash(&signed_blob);
-    let signature =
-        id_sign(alg_id, decrypted_priv.expose_secret(), &data_hash).expect("Signing failed");
+    let signature = id_sign(alg_id, decrypted_priv.expose_secret(), &data_hash)?;
 
     // Output full blob
     signed_blob.extend_from_slice(&signature);

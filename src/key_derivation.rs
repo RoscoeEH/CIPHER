@@ -16,6 +16,7 @@ use pbkdf2::pbkdf2_hmac;
 use secrecy::{ExposeSecret, Secret};
 use sha2::Sha256;
 use std::collections::HashMap;
+use std::error::Error;
 use zeroize::Zeroize;
 
 use crate::constants::*;
@@ -54,7 +55,7 @@ fn argon2_derive_key(
     mem_cost: Option<u32>,
     t_cost: Option<u32>,
     par: Option<u32>,
-) -> Result<Secret<Vec<u8>>, Box<dyn std::error::Error>> {
+) -> Result<Secret<Vec<u8>>, Box<dyn Error>> {
     // Default values
     let memory_cost = match mem_cost {
         Some(n) => n,
@@ -108,7 +109,7 @@ fn pbkdf2_derive_key(
     salt: &[u8],
     dklen: usize,
     iters: Option<u32>,
-) -> Result<Secret<Vec<u8>>, Box<dyn std::error::Error>> {
+) -> Result<Secret<Vec<u8>>, Box<dyn Error>> {
     let iterations = match iters {
         Some(n) => n,
         None => 600_000,
@@ -157,7 +158,7 @@ pub fn id_derive_key(
     salt: &[u8],
     dklen: usize,
     params: &HashMap<String, u32>,
-) -> Result<Secret<Vec<u8>>, Box<dyn std::error::Error>> {
+) -> Result<Secret<Vec<u8>>, Box<dyn Error>> {
     match alg_id {
         ARGON2_ID => argon2_derive_key(
             password,
@@ -181,7 +182,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_argon2_derive_key_kat() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_argon2_derive_key_kat() -> Result<(), Box<dyn Error>> {
         let password = Secret::new(String::from("password"));
         let salt = b"1234567890abcdef";
         let dklen = 32;
@@ -201,7 +202,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pbkdf2_derive_key_kat() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_pbkdf2_derive_key_kat() -> Result<(), Box<dyn Error>> {
         let password = Secret::new("password123".to_string());
         let salt = b"1234567890abcdef"; // 16 bytes salt
         let dklen = 32;

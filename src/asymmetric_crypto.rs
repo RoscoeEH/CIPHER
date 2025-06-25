@@ -75,7 +75,7 @@ use crate::symmetric_encryption::{id_decrypt, id_encrypt};
 /// This function will panic if:
 /// - RSA key generation fails.
 /// - DER encoding of the private or public key fails.
-fn rsa_key_gen(bits: usize) -> Result<(Secret<Vec<u8>>, Vec<u8>), Box<dyn std::error::Error>> {
+fn rsa_key_gen(bits: usize) -> Result<(Secret<Vec<u8>>, Vec<u8>), Box<dyn Error>> {
     let mut rng = thread_rng();
     let private_key = RsaPrivateKey::new(&mut rng, bits)?;
     let public_key = RsaPublicKey::from(&private_key);
@@ -106,7 +106,7 @@ fn rsa_key_gen(bits: usize) -> Result<(Secret<Vec<u8>>, Vec<u8>), Box<dyn std::e
 /// This function will panic if:
 /// - The public key cannot be parsed from DER format.
 /// - The encryption operation fails.
-fn rsa_enc(pub_key: &[u8], data: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+fn rsa_enc(pub_key: &[u8], data: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
     let public_key = RsaPublicKey::from_pkcs1_der(pub_key)?;
     let encrypted_data = public_key.encrypt(&mut thread_rng(), Pkcs1v15Encrypt, data)?;
     Ok(encrypted_data)
@@ -131,7 +131,7 @@ fn rsa_enc(pub_key: &[u8], data: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::E
 /// This function will panic if:
 /// - The private key cannot be parsed from DER format.
 /// - The decryption operation fails.
-fn rsa_dec(priv_key: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+fn rsa_dec(priv_key: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
     let private_key = RsaPrivateKey::from_pkcs1_der(priv_key)?;
     let decrypted_data = private_key.decrypt(Pkcs1v15Encrypt, ciphertext)?;
     Ok(decrypted_data)
@@ -156,7 +156,7 @@ fn rsa_dec(priv_key: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, Box<dyn std::e
 /// This function will panic if:
 /// - The private key cannot be parsed from DER format.
 /// - The signing operation fails (e.g., internal errors in RNG or key usage).
-fn rsa_sign(priv_key: &[u8], data: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+fn rsa_sign(priv_key: &[u8], data: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
     let private_key = RsaPrivateKey::from_pkcs1_der(priv_key)?;
 
     let signing_key = RsaSigningKey::<sha2::Sha256>::new(private_key);
@@ -188,11 +188,7 @@ fn rsa_sign(priv_key: &[u8], data: &[u8]) -> Result<Vec<u8>, Box<dyn std::error:
 ///
 /// This function will panic if:
 /// - The public key cannot be parsed from DER format.
-fn rsa_verify(
-    pub_key: &[u8],
-    data: &[u8],
-    signature: &[u8],
-) -> Result<(), Box<dyn std::error::Error>> {
+fn rsa_verify(pub_key: &[u8], data: &[u8], signature: &[u8]) -> Result<(), Box<dyn Error>> {
     let public_key = RsaPublicKey::from_pkcs1_der(pub_key)?;
     let verifying_key = RsaVerifyingKey::<Sha256>::new(public_key);
     let sig = RsaSignature::try_from(signature)?;
@@ -220,7 +216,7 @@ fn rsa_verify(
 ///
 /// This function will panic if:
 /// - The private key fails to encode into PKCS#8 DER format.
-fn ecc_key_gen() -> Result<(Secret<Vec<u8>>, Vec<u8>), Box<dyn std::error::Error>> {
+fn ecc_key_gen() -> Result<(Secret<Vec<u8>>, Vec<u8>), Box<dyn Error>> {
     // Generate a secret key
     let secret = P256SecretKey::random(&mut OsRng);
 
@@ -288,8 +284,7 @@ fn ecc_enc(pub_key: &[u8], data: &[u8], sym_alg_id: u8) -> Result<Vec<u8>, Box<d
 
     // Encrypt data
     let nonce = get_nonce()?;
-    let ciphertext = id_encrypt(sym_alg_id, secret_key.expose_secret(), &nonce, data, None)
-        .map_err(|e| Box::<dyn Error>::from(format!("Encryption failed: {e}")))?;
+    let ciphertext = id_encrypt(sym_alg_id, secret_key.expose_secret(), &nonce, data, None)?;
 
     // Prepend ephemeral public key
     let eph_pub = p256::PublicKey::from(&ephemeral);
@@ -316,17 +311,13 @@ fn ecc_enc(pub_key: &[u8], data: &[u8], sym_alg_id: u8) -> Result<Vec<u8>, Box<d
 /// # Returns
 ///
 /// * `Ok(Vec<u8>)` - The decrypted plaintext.
-/// * `Err(Box<dyn std::error::Error>)` - If decryption or any part of the key processing fails.
+/// * `Err(Box<dyn Error>)` - If decryption or any part of the key processing fails.
 ///
 /// # Panics
 ///
 /// This function panics if the SHA-256 digest output cannot be converted into a 32-byte array.
 /// (This is unlikely and would indicate an internal logic error.)
-fn ecc_dec(
-    priv_key: &[u8],
-    ciphertext: &[u8],
-    sym_alg_id: u8,
-) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+fn ecc_dec(priv_key: &[u8], ciphertext: &[u8], sym_alg_id: u8) -> Result<Vec<u8>, Box<dyn Error>> {
     use zeroize::Zeroize;
 
     // Load private key
@@ -360,7 +351,6 @@ fn ecc_dec(
         actual_ciphertext,
         None,
     )
-    .map_err(|e| format!("decryption failed: {}", e).into())
 }
 
 /// Signs data using ECDSA over the NIST P-256 curve with SHA-256 and deterministic (RFC 6979) signing.
@@ -497,7 +487,7 @@ fn kyber_enc(pub_key: &[u8], data: &[u8], sym_alg_id: u8) -> Result<Vec<u8>, Box
     // Encrypt the payload with symmetric encryption
     let nonce = get_nonce()?;
     let ciphertext_payload =
-        id_encrypt(sym_alg_id, secret_key.expose_secret(), &nonce, data, None).unwrap();
+        id_encrypt(sym_alg_id, secret_key.expose_secret(), &nonce, data, None)?;
 
     // Output: Kyber ciphertext || encrypted payload
     let mut result = ciphertext.as_bytes().to_vec();
@@ -564,7 +554,6 @@ fn kyber_dec(
         encrypted_payload,
         None,
     )
-    .map_err(|e| format!("decryption failed: {}", e).into())
 }
 
 // === dilithium ===
@@ -583,7 +572,7 @@ fn kyber_dec(
 /// # Errors
 ///
 /// Returns an error if key generation fails, though this is unlikely under normal conditions.
-fn dilithium_key_gen() -> Result<(Secret<Vec<u8>>, Vec<u8>), Box<dyn std::error::Error>> {
+fn dilithium_key_gen() -> Result<(Secret<Vec<u8>>, Vec<u8>), Box<dyn Error>> {
     let (public_key_struct, secret_key_struct) = dilithium2::keypair();
 
     let private_key_bytes = secret_key_struct.as_bytes().to_vec();
@@ -609,10 +598,7 @@ fn dilithium_key_gen() -> Result<(Secret<Vec<u8>>, Vec<u8>), Box<dyn std::error:
 /// # Errors
 ///
 /// Returns an error if the private key is invalid or signing fails.
-fn dilithium_sign(
-    message: &[u8],
-    private_key_bytes: &[u8],
-) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+fn dilithium_sign(message: &[u8], private_key_bytes: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
     let secret_key = dilithium2::SecretKey::from_bytes(private_key_bytes)?;
     let signed_message = dilithium2::sign(message, &secret_key);
 
@@ -645,7 +631,7 @@ fn dilithium_verify(
     public_key_bytes: &[u8],
     message: &[u8],
     signature: &[u8],
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn Error>> {
     let public_key = dilithium2::PublicKey::from_bytes(public_key_bytes)?;
 
     // Reconstruct a `SignedMessage` by prepending the signature to the message
@@ -673,7 +659,7 @@ fn dilithium_verify(
 /// # Returns
 ///
 /// * `Ok((Secret<Vec<u8>>, Vec<u8>))` - A tuple containing the private key (wrapped in `Secret`) and the public key bytes.
-/// * `Err(Box<dyn std::error::Error>)` - If the algorithm ID is unrecognized.
+/// * `Err(Box<dyn Error>)` - If the algorithm ID is unrecognized.
 ///
 /// # Notes
 ///
@@ -683,7 +669,7 @@ fn dilithium_verify(
 pub fn id_keypair_gen(
     alg_id: u8,
     bits: Option<usize>,
-) -> Result<(Secret<Vec<u8>>, Vec<u8>), Box<dyn std::error::Error>> {
+) -> Result<(Secret<Vec<u8>>, Vec<u8>), Box<dyn Error>> {
     match alg_id {
         ECC_ID => ecc_key_gen(),
         RSA_ID => rsa_key_gen(bits.unwrap_or(4096)),
@@ -710,7 +696,7 @@ pub fn id_keypair_gen(
 /// # Returns
 ///
 /// * `Ok(Vec<u8>)` - The encrypted ciphertext.
-/// * `Err(Box<dyn std::error::Error>)` - If encryption fails or parameters are invalid.
+/// * `Err(Box<dyn Error>)` - If encryption fails or parameters are invalid.
 ///
 /// # Notes
 ///
@@ -727,7 +713,7 @@ pub fn id_asym_enc(
     pub_key: &[u8],
     data: &[u8],
     sym_alg_id: Option<u8>,
-) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+) -> Result<Vec<u8>, Box<dyn Error>> {
     match alg_id {
         ECC_ID => {
             let sym_alg_id =
@@ -760,7 +746,7 @@ pub fn id_asym_enc(
 /// # Returns
 ///
 /// * `Ok(Vec<u8>)` - The decrypted plaintext.
-/// * `Err(Box<dyn std::error::Error>)` - If decryption fails or parameters are invalid.
+/// * `Err(Box<dyn Error>)` - If decryption fails or parameters are invalid.
 ///
 /// # Notes
 ///
@@ -776,7 +762,7 @@ pub fn id_asym_dec(
     priv_key: &[u8],
     ciphertext: &[u8],
     sym_alg_id: Option<u8>,
-) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+) -> Result<Vec<u8>, Box<dyn Error>> {
     match alg_id {
         ECC_ID => {
             let sym_alg_id =
@@ -839,7 +825,7 @@ pub fn id_sign(alg_id: u8, priv_key: &[u8], data: &[u8]) -> Result<Vec<u8>, Box<
 /// # Returns
 ///
 /// * `Ok(())` - If the signature is valid.
-/// * `Err(Box<dyn std::error::Error>)` - If verification fails or the algorithm ID is unsupported.
+/// * `Err(Box<dyn Error>)` - If verification fails or the algorithm ID is unsupported.
 ///
 /// # Notes
 ///
@@ -852,7 +838,7 @@ pub fn id_verify(
     pub_key: &[u8],
     data: &[u8],
     signature: &[u8],
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn Error>> {
     match alg_id {
         RSA_ID => rsa_verify(pub_key, data, signature).map_err(|e| e.into()),
         ECC_ID => ecdsa_verify(pub_key, data, signature).map_err(|e| e.into()),
@@ -866,7 +852,7 @@ pub fn id_verify(
 mod tests {
     use super::*;
     #[test]
-    fn test_rsa_enc_dec_kat() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_rsa_enc_dec_kat() -> Result<(), Box<dyn Error>> {
         let plaintext = b"Test vector: RSA encryption test";
         let key_bits = 2048;
 
@@ -888,7 +874,7 @@ mod tests {
         Ok(())
     }
     #[test]
-    fn test_rsa_sign_verify_kat() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_rsa_sign_verify_kat() -> Result<(), Box<dyn Error>> {
         let message = b"Test vector: RSA signing test";
         let (priv_key_der, pub_key_der) = rsa_key_gen(2048)?;
 
@@ -900,7 +886,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ecc_enc_dec_kat() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_ecc_enc_dec_kat() -> Result<(), Box<dyn Error>> {
         let sym_alg_id = AES_GCM_ID;
         let plaintext = b"Test vector: ECC encryption test";
 
@@ -919,7 +905,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ecdsa_sign_verify_kat() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_ecdsa_sign_verify_kat() -> Result<(), Box<dyn Error>> {
         let message = b"Test vector: ECDSA signing test";
         let (priv_key_der, pub_key_sec1) = ecc_key_gen()?;
 
@@ -931,7 +917,7 @@ mod tests {
     }
 
     #[test]
-    fn test_kyber_enc_dec_kat() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_kyber_enc_dec_kat() -> Result<(), Box<dyn Error>> {
         let plaintext = b"Test vector: Kyber encryption test";
         let sym_alg_id = AES_GCM_ID;
 
@@ -950,7 +936,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dilithium_sign_verify_kat() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_dilithium_sign_verify_kat() -> Result<(), Box<dyn Error>> {
         let message = b"Test vector: Dilithium signing test";
 
         let (secret_key_bytes, public_key_bytes) = dilithium_key_gen()?;

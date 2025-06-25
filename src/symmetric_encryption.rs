@@ -11,9 +11,10 @@
 // Symmetric encryption utilities using AEAD algorithms.
 // Includes encryption/decryption logic and known-answer tests (KATs) for validation.
 
-use aead::{generic_array::GenericArray, Aead, AeadCore, Error as AeadError, KeyInit, KeySizeUser};
+use aead::{generic_array::GenericArray, Aead, AeadCore, KeyInit, Payload};
 use aes_gcm::Aes256Gcm;
 use chacha20poly1305::ChaCha20Poly1305;
+use std::error::Error;
 use typenum::Unsigned;
 
 use crate::constants::*;
@@ -43,57 +44,70 @@ fn aead_base<C>(
     data: &[u8],
     aad: Option<&[u8]>,
     encrypt: bool,
-) -> Result<Vec<u8>, AeadError>
+) -> Result<Vec<u8>, Box<dyn Error>>
 where
-    C: Aead + KeyInit + AeadCore + KeySizeUser,
+    C: Aead + KeyInit + AeadCore,
+    C::KeySize: Unsigned,
+    C::NonceSize: Unsigned,
 {
-    let key_len = <C as KeySizeUser>::KeySize::to_usize();
-    let nonce_len = <C as AeadCore>::NonceSize::to_usize();
+    let key_len = C::KeySize::to_usize();
+    let nonce_len = C::NonceSize::to_usize();
 
-    assert_eq!(
-        key.len(),
-        key_len,
-        "key must be {} bytes, got {} bytes",
-        key_len,
-        key.len()
-    );
+    if key.len() != key_len {
+        return Err(format!("Key must be {} bytes, got {} bytes", key_len, key.len()).into());
+    }
 
     if let Some(nonce) = nonce {
-        assert_eq!(
-            nonce.len(),
-            nonce_len,
-            "nonce must be {} bytes, got {} bytes",
-            nonce_len,
-            nonce.len()
-        );
+        if nonce.len() != nonce_len {
+            return Err(format!(
+                "Nonce must be {} bytes, got {} bytes",
+                nonce_len,
+                nonce.len()
+            )
+            .into());
+        }
     }
 
     let key_arr = GenericArray::clone_from_slice(key);
     let cipher = C::new(&key_arr);
-
-    let aad = aad.unwrap_or(&[]); // Default to empty AAD if not provided
+    let aad = aad.unwrap_or(&[]);
 
     if encrypt {
-        let nonce_arr = GenericArray::from_slice(nonce.unwrap());
-        let ciphertext = cipher.encrypt(nonce_arr, aead::Payload { msg: data, aad })?;
+        let nonce = nonce.ok_or("Nonce must be provided for encryption")?;
+        let nonce_arr = GenericArray::from_slice(nonce);
+
+        let ciphertext = cipher
+            .encrypt(nonce_arr, Payload { msg: data, aad })
+            .map_err(|e| format!("Encryption failed: {e}"))?;
 
         let mut out = Vec::with_capacity(nonce_len + ciphertext.len());
-        out.extend_from_slice(nonce.unwrap());
+        out.extend_from_slice(nonce);
         out.extend_from_slice(&ciphertext);
         Ok(out)
     } else {
         if data.len() < nonce_len {
-            return Err(AeadError);
+            return Err(format!(
+                "Ciphertext too short: expected at least {} bytes, got {}",
+                nonce_len,
+                data.len()
+            )
+            .into());
         }
+
         let (nonce_bytes, ciphertext) = data.split_at(nonce_len);
         let nonce_arr = GenericArray::from_slice(nonce_bytes);
-        cipher.decrypt(
-            nonce_arr,
-            aead::Payload {
-                msg: ciphertext,
-                aad,
-            },
-        )
+
+        let plaintext = cipher
+            .decrypt(
+                nonce_arr,
+                Payload {
+                    msg: ciphertext,
+                    aad,
+                },
+            )
+            .map_err(|e| format!("Decryption failed: {e}"))?;
+
+        Ok(plaintext)
     }
 }
 
@@ -121,7 +135,7 @@ pub fn id_encrypt(
     nonce: &[u8],
     data: &[u8],
     aad: Option<&[u8]>,
-) -> Result<Vec<u8>, aead::Error> {
+) -> Result<Vec<u8>, Box<dyn Error>> {
     match alg_id {
         AES_GCM_ID => aead_base::<Aes256Gcm>(key, Some(nonce), data, aad, true),
         CHA_CHA_20_POLY_1305_ID => aead_base::<ChaCha20Poly1305>(key, Some(nonce), data, aad, true),
@@ -154,7 +168,7 @@ pub fn id_decrypt(
     key: &[u8],
     data: &[u8],
     aad: Option<&[u8]>,
-) -> Result<Vec<u8>, aead::Error> {
+) -> Result<Vec<u8>, Box<dyn Error>> {
     match alg_id {
         AES_GCM_ID => aead_base::<Aes256Gcm>(key, None, data, aad, false),
         CHA_CHA_20_POLY_1305_ID => aead_base::<ChaCha20Poly1305>(key, None, data, aad, false),
@@ -172,7 +186,7 @@ mod tests {
     use hex_literal::hex;
 
     #[test]
-    fn test_aes_gcm_kat_encrypt_decrypt() {
+    fn test_aes_gcm_kat_encrypt_decrypt() -> Result<(), Box<dyn Error>> {
         let key = hex!("0000000000000000000000000000000000000000000000000000000000000000");
         let nonce = hex!("000000000000000000000000");
         let plaintext = hex!("00000000000000000000000000000000");
@@ -184,7 +198,7 @@ mod tests {
         // Our encrypt prepends nonce, so expected output is nonce || expected_ciphertext
         let expected_output = [&nonce[..], &expected_ciphertext[..]].concat();
 
-        let ciphertext_with_nonce = id_encrypt(AES_GCM_ID, &key, &nonce, &plaintext, None).unwrap();
+        let ciphertext_with_nonce = id_encrypt(AES_GCM_ID, &key, &nonce, &plaintext, None)?;
 
         assert_eq!(
             ciphertext_with_nonce, expected_output,
@@ -192,17 +206,17 @@ mod tests {
         );
 
         // Decrypt using full buffer: nonce + ciphertext + tag
-        let decrypted_plaintext =
-            id_decrypt(AES_GCM_ID, &key, &ciphertext_with_nonce, None).unwrap();
+        let decrypted_plaintext = id_decrypt(AES_GCM_ID, &key, &ciphertext_with_nonce, None)?;
 
         assert_eq!(
             decrypted_plaintext, plaintext,
             "Decrypted plaintext does not match original"
         );
+        Ok(())
     }
 
     #[test]
-    fn test_chacha_20_kat_encrypt_decrypt() {
+    fn test_chacha_20_kat_encrypt_decrypt() -> Result<(), Box<dyn Error>> {
         let key = hex!(
             "1c9240a5eb55d38af333888604f6b5f0
          473917c1402b80099dca5cbc207075c0"
@@ -211,36 +225,48 @@ mod tests {
         let plaintext =
             hex!("496e7465726e65742d4472616674732061726520647261667420646f63756d656e7473");
 
-        // Correct ciphertext (from RFC 8439) + tag (no AAD used in our implementation)
-        let expected_ciphertext = hex!("00000000010203040506070864a0861575861af460f062c79be643bd5e805cfd345cf389f108670ac76c8cb24c6cfce39ab006ad7516926f09107c693cc136")
-;
+        let expected_ciphertext = hex!(
+        "00000000010203040506070864a0861575861af460f062c79be643bd5e805cfd345cf389f108670ac76c8cb24c6cfce39ab006ad7516926f09107c693cc136"
+    );
 
-        let ciphertext =
-            id_encrypt(CHA_CHA_20_POLY_1305_ID, &key, &nonce, &plaintext, None).unwrap();
+        let ciphertext = id_encrypt(CHA_CHA_20_POLY_1305_ID, &key, &nonce, &plaintext, None)?;
 
         assert_eq!(
             ciphertext, expected_ciphertext,
             "ChaCha20Poly1305 ciphertext (with nonce) does not match expected"
         );
 
-        let decrypted_plaintext =
-            id_decrypt(CHA_CHA_20_POLY_1305_ID, &key, &ciphertext, None).unwrap();
+        let decrypted_plaintext = id_decrypt(CHA_CHA_20_POLY_1305_ID, &key, &ciphertext, None)?;
 
         assert_eq!(
             decrypted_plaintext, plaintext,
             "Decrypted plaintext does not match original"
         );
+
+        Ok(())
     }
 
     #[test]
-    #[should_panic(expected = "Attempted encryption with unsupported algorithm ID")]
-    fn test_encrypt_with_invalid_algorithm() {
-        let _ = id_encrypt(99, b"key", b"nonce", b"data", None);
+    fn test_encrypt_with_invalid_algorithm() -> Result<(), Box<dyn std::error::Error>> {
+        let result = id_encrypt(99, b"key", b"nonce", b"data", None);
+
+        assert!(
+            result.is_err(),
+            "Expected error when encrypting with invalid algorithm ID"
+        );
+
+        Ok(())
     }
 
     #[test]
-    #[should_panic(expected = "Attempted decryption with unsupported algorithm ID")]
-    fn test_decrypt_with_invalid_algorithm() {
-        let _ = id_decrypt(99, b"key", b"data", None);
+    fn test_decrypt_with_invalid_algorithm() -> Result<(), Box<dyn std::error::Error>> {
+        let result = id_decrypt(99, b"key", b"data", None);
+
+        assert!(
+            result.is_err(),
+            "Expected error when decrypting with invalid algorithm ID"
+        );
+
+        Ok(())
     }
 }

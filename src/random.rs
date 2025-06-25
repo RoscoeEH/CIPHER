@@ -13,6 +13,7 @@
 
 use rand::rngs::OsRng;
 use rand::RngCore;
+use std::error::Error;
 
 /// Generates a cryptographically secure random byte vector of the specified length.
 ///
@@ -27,7 +28,7 @@ use rand::RngCore;
 ///
 /// # Panics
 /// May panic if the OS random number generator fails, though this is highly unlikely.
-pub fn get_random_val(length: usize) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+pub fn get_random_val(length: usize) -> Result<Vec<u8>, Box<dyn Error>> {
     let mut val = vec![0u8; length];
     OsRng.fill_bytes(&mut val);
     Ok(val)
@@ -39,7 +40,7 @@ pub fn get_random_val(length: usize) -> Result<Vec<u8>, Box<dyn std::error::Erro
 ///
 /// # Returns
 /// A `Vec<u8>` containing 12 securely generated random bytes.
-pub fn get_nonce() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+pub fn get_nonce() -> Result<Vec<u8>, Box<dyn Error>> {
     get_random_val(12)
 }
 
@@ -49,6 +50,6 @@ pub fn get_nonce() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
 ///
 /// # Returns
 /// A `Vec<u8>` containing 16 securely generated random bytes.
-pub fn get_salt() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+pub fn get_salt() -> Result<Vec<u8>, Box<dyn Error>> {
     get_random_val(16)
 }

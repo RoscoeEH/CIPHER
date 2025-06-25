@@ -95,7 +95,7 @@ pub fn alg_id_to_name(id: u8) -> &'static str {
 /// # Panics
 /// This function does not panic, but it will terminate the program with a message
 /// if parsing fails.
-pub fn parse_u32(field: &str, value: &str) -> Result<u32, Box<dyn std::error::Error>> {
+pub fn parse_u32(field: &str, value: &str) -> Result<u32, Box<dyn Error>> {
     value
         .parse::<u32>()
         .map_err(|e| format!("Invalid number for '{}': {}", field, e).into())
@@ -203,7 +203,7 @@ pub fn read_file(path: &str) -> Result<Vec<u8>, Box<dyn Error>> {
 ///
 /// # Panics
 /// Panics if writing to stdout or reading from stdin fails.
-pub fn warn_user(message: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub fn warn_user(message: &str) -> Result<(), Box<dyn Error>> {
     print!("{} [y/N]: ", message);
     io::stdout().flush()?;
 
@@ -256,9 +256,9 @@ pub struct DerivedKeyInfo {
 pub fn generate_key_from_args(
     args: &EncryptArgs,
     profile: &UserProfile,
-) -> Result<DerivedKeyInfo, Box<dyn std::error::Error>> {
+) -> Result<DerivedKeyInfo, Box<dyn Error>> {
     let kdf_id = match args.kdf {
-        Some(ref s) => alg_name_to_id(s.as_str()).unwrap(),
+        Some(ref s) => alg_name_to_id(s.as_str())?,
         None => profile.kdf_id,
     };
 
@@ -302,7 +302,7 @@ pub fn generate_key_from_args(
 pub fn derive_key_from_stored(
     sym_key: &mut SymKey,
     password: Secret<String>,
-) -> Result<DerivedKeyInfo, Box<dyn std::error::Error>> {
+) -> Result<DerivedKeyInfo, Box<dyn Error>> {
     let derived = id_derive_key(
         sym_key.derivation_method_id,
         password,
@@ -357,13 +357,13 @@ pub fn gen_asym_key(
     name: String,
     bits: usize,
 ) -> Result<(), Box<dyn Error>> {
-    let profile = match get_profile(profile_id.as_str()).unwrap() {
+    let profile = match get_profile(profile_id.as_str())? {
         Some(p) => p,
-        None => init_profile().unwrap(),
+        None => init_profile()?,
     };
-    let alg_id = alg_name_to_id(asym_id.as_str()).unwrap();
+    let alg_id = alg_name_to_id(asym_id.as_str())?;
 
-    let (priv_key, pub_key) = id_keypair_gen(alg_id, Some(bits)).unwrap();
+    let (priv_key, pub_key) = id_keypair_gen(alg_id, Some(bits))?;
 
     let kek_salt_bytes = get_salt()?;
     // Fix how profiles store params first
@@ -385,8 +385,7 @@ pub fn gen_asym_key(
             &get_nonce()?,
             &priv_key.expose_secret(),
             None,
-        )
-        .unwrap(),
+        )?,
         kek_salt: kek_salt_bytes,
         kek_kdf: profile.kdf_id,
         kek_params: profile.params,
@@ -424,9 +423,9 @@ pub fn gen_sym_key(
     name: String,
 ) -> Result<(), Box<dyn Error>> {
     let salt_vec = get_salt()?;
-    let profile = match get_profile(profile_id.as_str()).unwrap() {
+    let profile = match get_profile(profile_id.as_str())? {
         Some(p) => p,
-        None => init_profile().unwrap(),
+        None => init_profile()?,
     };
     let params: HashMap<String, u32> = profile.params;
     let key = id_derive_key(profile.kdf_id, password, &salt_vec, SYM_KEY_LEN, &params)?;
@@ -564,8 +563,7 @@ pub fn decrypt_private_key(keypair: &AsymKeyPair) -> Result<Secret<Vec<u8>>, Box
         &kek.expose_secret(),
         &keypair.private_key,
         None,
-    )
-    .unwrap();
+    )?;
 
     Ok(Secret::new(decrypted))
 }
@@ -586,7 +584,7 @@ pub fn decrypt_private_key(keypair: &AsymKeyPair) -> Result<Secret<Vec<u8>>, Box
 /// * `plaintext` - The data (in bytes) to be encrypted.
 ///
 /// # Returns
-/// * `Result<Vec<u8>, Box<dyn std::error::Error>>` - A result containing the encrypted blob as a `Vec<u8>`. The blob includes:
+/// * `Result<Vec<u8>, Box<dyn Error>>` - A result containing the encrypted blob as a `Vec<u8>`. The blob includes:
 ///    - A header consisting of magic bytes, algorithm IDs, key ID length, key ID, and filename length.
 ///    - The encrypted content (ciphertext).
 ///
@@ -638,7 +636,7 @@ pub fn build_asym_encrypted_blob(
 ///   and the ciphertext that needs to be decrypted.
 ///
 /// # Returns
-/// * `Result<(Vec<u8>, Vec<u8>), Box<dyn std::error::Error>>` - A tuple containing:
+/// * `Result<(Vec<u8>, Vec<u8>), Box<dyn Error>>` - A tuple containing:
 ///   - `Vec<u8>` representing the filename bytes (in UTF-8),
 ///   - `Vec<u8>` representing the decrypted plaintext data.
 ///
@@ -682,7 +680,7 @@ pub fn decrypt_asym_blob(blob: &[u8]) -> Result<(Vec<u8>, Vec<u8>), Box<dyn Erro
     cursor.read_to_end(&mut ciphertext)?;
 
     // Retrieve private key from keystore and decrypt
-    let keypair = get_key(&key_id).unwrap().ok_or("Key entry is None")?;
+    let keypair = get_key(&key_id)?.ok_or("Key entry is None")?;
 
     let decrypted_priv_key = decrypt_private_key(&keypair)?;
 
@@ -716,7 +714,7 @@ pub fn decrypt_asym_blob(blob: &[u8]) -> Result<(Vec<u8>, Vec<u8>), Box<dyn Erro
 ///   salt, ciphertext, and filename.
 ///
 /// # Returns
-/// * `Result<(Vec<u8>, String), Box<dyn std::error::Error>>` - A tuple containing:
+/// * `Result<(Vec<u8>, String), Box<dyn Error>>` - A tuple containing:
 ///   - `Vec<u8>` representing the decrypted file data,
 ///   - `String` representing the filename (UTF-8 encoded).
 ///
@@ -801,7 +799,7 @@ pub fn decrypt_sym_blob(blob: &[u8]) -> Result<(Vec<u8>, String), Box<dyn Error>
     let key = id_derive_key(kdf_id, password, &salt, SYM_KEY_LEN, &params)?;
 
     let plaintext_with_filename =
-        id_decrypt(aead_id, &key.expose_secret(), &ciphertext, Some(&aad)).unwrap();
+        id_decrypt(aead_id, &key.expose_secret(), &ciphertext, Some(&aad))?;
 
     let total_len = plaintext_with_filename.len();
     if filename_len > total_len {
@@ -874,8 +872,7 @@ pub fn encrypt_sym_blob(
         &nonce,
         plaintext,
         Some(&header),
-    )
-    .unwrap();
+    )?;
 
     // Return blob: header || ciphertext
     let mut blob = header;
@@ -951,7 +948,7 @@ pub fn build_signed_blob(
 /// * `raw` - A byte slice representing the raw signed data. This includes both the header and the signature.
 ///
 /// # Returns
-/// * `Result<bool, Box<dyn std::error::Error>>` - A result containing a boolean:
+/// * `Result<bool, Box<dyn Error>>` - A result containing a boolean:
 ///   - `true` if the signature is successfully verified,
 ///   - `false` if no matching public key is found or signature verification fails.
 ///
@@ -1013,7 +1010,9 @@ pub fn verify_signature(raw: &[u8]) -> Result<bool, Box<dyn Error>> {
         Ok(pub_key) => {
             id_verify(
                 alg_id,
-                &pub_key.unwrap().public_key(),
+                &pub_key
+                    .ok_or_else(|| "Signature verification failed.")?
+                    .public_key(),
                 &data_hash,
                 signature,
             )?;
@@ -1033,7 +1032,7 @@ pub fn verify_signature(raw: &[u8]) -> Result<bool, Box<dyn Error>> {
 /// * `raw` - A byte slice representing the raw signed data blob, which contains a header followed by the signature data.
 ///
 /// # Returns
-/// * `Result<(Vec<u8>, Vec<u8>), Box<dyn std::error::Error>>` - A tuple containing:
+/// * `Result<(Vec<u8>, Vec<u8>), Box<dyn Error>>` - A tuple containing:
 ///   - `Vec<u8>` representing the filename bytes (in the form of UTF-8),
 ///   - `Vec<u8>` representing the actual signed data.
 ///

@@ -12,9 +12,9 @@
 // components including CLI processing, encryption routines, key management, and profile handling.
 
 use secrecy::{ExposeSecret, Secret};
+use std::error::Error;
 use std::fs::File;
 use std::io::{Read, Write};
-use std::panic;
 use std::path::PathBuf;
 
 pub mod asymmetric_crypto;
@@ -30,13 +30,7 @@ pub mod utils;
 
 use clap::Parser;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Simpler panics for production
-    if !cfg!(debug_assertions) {
-        panic::set_hook(Box::new(|_info| {
-            eprintln!("Something went wrong, please check your inputs.");
-        }));
-    }
+fn main() -> Result<(), Box<dyn Error>> {
     let cli = cli::Cli::parse();
 
     match cli.command {
@@ -428,15 +422,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 SYM_KEY_LEN,
                 &keypair.kek_params,
             )?;
-            let decrypted_private_key = Secret::new(
-                symmetric_encryption::id_decrypt(
-                    keypair.kek_aead,
-                    &kek.expose_secret(),
-                    &keypair.private_key,
-                    None,
-                )
-                .map_err(|e| format!("Decryption failed: {:?}", e))?,
-            );
+            let decrypted_private_key = Secret::new(symmetric_encryption::id_decrypt(
+                keypair.kek_aead,
+                &kek.expose_secret(),
+                &keypair.private_key,
+                None,
+            )?);
 
             // sign the blob
             let blob = utils::build_signed_blob(

@@ -141,7 +141,7 @@ pub trait Validatable {
 ///
 /// * Prints an error and exits the program if validation fails.
 /// * Continues execution silently if validation succeeds.
-pub fn validate_args<T: Validatable>(args: &T) -> Result<(), Box<dyn std::error::Error>> {
+pub fn validate_args<T: Validatable>(args: &T) -> Result<(), Box<dyn Error>> {
     if let Err(e) = args.validate() {
         let mut msg = format!("Invalid input: {}", e);
         if let Some(source) = e.source() {
@@ -329,7 +329,10 @@ impl Validatable for ProfileArgs {
                     .value
                     .parse::<u32>()
                     .map_err(|_| "Invalid memory_cost value")?;
-                let min = 8 * profile.params.get("parallelism").unwrap();
+                let min = 8 * profile
+                    .params
+                    .get("parallelism")
+                    .ok_or_else(|| "Missing Required parameter: parallelism")?;
                 let max = if cfg!(target_pointer_width = "64") {
                     u32::min(u32::MAX, 4 * 1024 * 1024)
                 } else {

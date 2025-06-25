@@ -25,7 +25,7 @@ use crate::constants::*;
 use crate::utils::alg_id_to_name;
 
 // Enables storage of profiles in the application
-fn get_db_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
+fn get_db_path() -> Result<PathBuf, Box<dyn Error>> {
     let db_dir = if cfg!(debug_assertions) {
         PathBuf::from("./profiles")
     } else {
@@ -78,8 +78,8 @@ pub struct UserProfile {
 ///
 /// # Errors
 /// Returns an error if serialization fails or if the database operation encounters an issue.
-pub fn set_profile(profile: &UserProfile) -> Result<(), Box<dyn std::error::Error>> {
-    let db = PROFILES_DB.lock().unwrap();
+pub fn set_profile(profile: &UserProfile) -> Result<(), Box<dyn Error>> {
+    let db = PROFILES_DB.lock()?;
 
     let serialized = bincode::serialize(profile)?;
     db.put(profile.id.as_bytes(), serialized)?;
@@ -98,8 +98,8 @@ pub fn set_profile(profile: &UserProfile) -> Result<(), Box<dyn std::error::Erro
 /// - `Ok(Some(UserProfile))` if the profile exists and is successfully deserialized.
 /// - `Ok(None)` if no profile is found with the given ID.
 /// - An error if the database read or deserialization fails.
-pub fn get_profile(id: &str) -> Result<Option<UserProfile>, Box<dyn std::error::Error>> {
-    let db = PROFILES_DB.lock().unwrap();
+pub fn get_profile(id: &str) -> Result<Option<UserProfile>, Box<dyn Error>> {
+    let db = PROFILES_DB.lock()?;
 
     if let Some(data) = db.get(id.as_bytes())? {
         let profile: UserProfile = bincode::deserialize(&data)?;
@@ -123,7 +123,7 @@ pub fn get_profile(id: &str) -> Result<Option<UserProfile>, Box<dyn std::error::
 /// # Returns
 /// - `Ok(UserProfile)` containing the default or newly created profile.
 /// - An error if reading or writing the profile fails.
-pub fn init_profile() -> Result<UserProfile, Box<dyn std::error::Error>> {
+pub fn init_profile() -> Result<UserProfile, Box<dyn Error>> {
     let default_id = "Default";
 
     if let Some(profile) = get_profile(default_id)? {
@@ -163,8 +163,8 @@ pub fn init_profile() -> Result<UserProfile, Box<dyn std::error::Error>> {
 ///
 /// # Panics
 /// Panics if the default profile cannot be initialized or if storing the new profile fails.
-pub fn get_new_profile(new_id: String) -> Result<UserProfile, Box<dyn std::error::Error>> {
-    let mut base_profile = init_profile().unwrap();
+pub fn get_new_profile(new_id: String) -> Result<UserProfile, Box<dyn Error>> {
+    let mut base_profile = init_profile()?;
     base_profile.id = new_id;
     set_profile(&base_profile)?;
     Ok(base_profile)
@@ -178,8 +178,8 @@ pub fn get_new_profile(new_id: String) -> Result<UserProfile, Box<dyn std::error
 /// # Returns
 /// * `Ok(())` if listing succeeds.
 /// * `Err` if there is a database or deserialization error.
-pub fn list_profiles() -> Result<(), Box<dyn std::error::Error>> {
-    let db = PROFILES_DB.lock().unwrap();
+pub fn list_profiles() -> Result<(), Box<dyn Error>> {
+    let db = PROFILES_DB.lock()?;
 
     println!("Stored user profiles:\n");
 

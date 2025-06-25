@@ -23,7 +23,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 // Enables storage of the keys within the application instead of where you run the program
-fn get_keystore_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
+fn get_keystore_path() -> Result<PathBuf, Box<dyn Error>> {
     let base_dir = if cfg!(debug_assertions) {
         // Dev path
         PathBuf::from("./keystore")
@@ -48,7 +48,7 @@ lazy_static! {
 }
 
 // Repeat for public key database
-fn get_public_keystore_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
+fn get_public_keystore_path() -> Result<PathBuf, Box<dyn Error>> {
     let base_dir = if cfg!(debug_assertions) {
         // Dev path
         PathBuf::from("./public_keystore")
@@ -151,7 +151,7 @@ impl HasId for SymKey {
 ///
 /// # Returns
 /// - `Ok(())` if the key was successfully serialized and stored.
-/// - `Err(Box<dyn std::error::Error>)` if serialization or database insertion fails.
+/// - `Err(Box<dyn Error>)` if serialization or database insertion fails.
 ///
 /// # Errors
 /// This function returns an error if:
@@ -160,15 +160,14 @@ impl HasId for SymKey {
 ///
 /// # Panics
 /// - This function will panic if locking the global `KEY_STORE` mutex fails.
-pub fn store_key<T: Serialize + HasId>(key: &T) -> Result<(), Box<dyn std::error::Error>> {
-    let serialized =
-        bincode::serialize(key).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+pub fn store_key<T: Serialize + HasId>(key: &T) -> Result<(), Box<dyn Error>> {
+    let serialized = bincode::serialize(key).map_err(|e| Box::new(e) as Box<dyn Error>)?;
 
     let id = key.id();
 
-    let db = KEY_STORE.lock().unwrap();
+    let db = KEY_STORE.lock()?;
     db.put(id, serialized)
-        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+        .map_err(|e| Box::new(e) as Box<dyn Error>)?;
 
     Ok(())
 }
@@ -184,7 +183,7 @@ pub fn store_key<T: Serialize + HasId>(key: &T) -> Result<(), Box<dyn std::error
 /// # Returns
 /// - `Ok(Some(T))` if the key is found and successfully deserialized.
 /// - `Ok(None)` if no key with the given ID exists.
-/// - `Err(Box<dyn std::error::Error>)` if deserialization or database access fails.
+/// - `Err(Box<dyn Error>)` if deserialization or database access fails.
 ///
 /// # Errors
 /// This function returns an error if:
@@ -193,8 +192,8 @@ pub fn store_key<T: Serialize + HasId>(key: &T) -> Result<(), Box<dyn std::error
 ///
 /// # Panics
 /// This function will panic if locking the global `KEY_STORE` mutex fails.
-pub fn get_key<T: DeserializeOwned>(id: &str) -> Result<Option<T>, Box<dyn std::error::Error>> {
-    let db = KEY_STORE.lock().unwrap();
+pub fn get_key<T: DeserializeOwned>(id: &str) -> Result<Option<T>, Box<dyn Error>> {
+    let db = KEY_STORE.lock()?;
     match db.get(id) {
         Ok(Some(serialized)) => match bincode::deserialize::<T>(&serialized) {
             Ok(deserialized) => Ok(Some(deserialized)),
@@ -227,7 +226,7 @@ pub fn get_key<T: DeserializeOwned>(id: &str) -> Result<Option<T>, Box<dyn std::
 /// - Iteration over the key store fails.
 /// - A value in the key store cannot be read.
 pub fn list_keys() -> Result<(), Box<dyn Error>> {
-    let db = KEY_STORE.lock().unwrap();
+    let db = KEY_STORE.lock()?;
     let iter = db.iterator(rocksdb::IteratorMode::Start);
 
     println!("Stored Keys:");
@@ -301,7 +300,7 @@ pub fn wipe_keystore() -> Result<(), Box<dyn Error>> {
 /// * `Ok(())` if the delete succeeded (even if the key didn't exist)
 /// * `Err(_)` if the underlying RocksDB delete failed
 pub fn delete_key(id: &str) -> Result<(), Box<dyn Error>> {
-    let db = KEY_STORE.lock().unwrap();
+    let db = KEY_STORE.lock()?;
     db.delete(id.as_bytes())
         .map_err(|e| Box::new(e) as Box<dyn Error>)?;
     Ok(())
@@ -401,7 +400,7 @@ pub fn export_key(id: &str) -> Result<Vec<u8>, Box<dyn Error>> {
         public_key: keypair.public_key,
         created: keypair.created,
     };
-    let serialized = bincode::serialize(&public_key).unwrap();
+    let serialized = bincode::serialize(&public_key)?;
     Ok(serialized)
 }
 
@@ -418,7 +417,7 @@ pub fn export_key(id: &str) -> Result<Vec<u8>, Box<dyn Error>> {
 /// # Returns
 ///
 /// * `Ok(())` - If the key is successfully deserialized and stored.
-/// * `Err(Box<dyn std::error::Error>)` - If deserialization or database storage fails.
+/// * `Err(Box<dyn Error>)` - If deserialization or database storage fails.
 ///
 /// # Errors
 ///
@@ -430,24 +429,20 @@ pub fn export_key(id: &str) -> Result<Vec<u8>, Box<dyn Error>> {
 ///
 /// The `internal_id` is preserved from the original key, and only the `id`
 /// is overridden if `alt_id` is provided.
-pub fn import_key(
-    key_vec: &[u8],
-    alt_id: Option<String>,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub fn import_key(key_vec: &[u8], alt_id: Option<String>) -> Result<(), Box<dyn Error>> {
     let mut key: UnownedPublicKey = bincode::deserialize(key_vec)?;
 
     if alt_id.is_some() {
-        key.id = alt_id.unwrap();
+        key.id = alt_id.ok_or_else(|| "Key missing alternate ID.")?;
     }
 
-    let serialized =
-        bincode::serialize(&key).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+    let serialized = bincode::serialize(&key).map_err(|e| Box::new(e) as Box<dyn Error>)?;
 
     let id = key.id;
 
-    let db = PUBLIC_KEY_STORE.lock().unwrap();
+    let db = PUBLIC_KEY_STORE.lock()?;
     db.put(id, serialized)
-        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+        .map_err(|e| Box::new(e) as Box<dyn Error>)?;
 
     Ok(())
 }
@@ -465,17 +460,15 @@ pub fn import_key(
 ///
 /// * `Ok(Some(UnownedPublicKey))` - If a key with the given ID is found and deserialized successfully.
 /// * `Ok(None)` - If no key with the given ID exists in the store.
-/// * `Err(Box<dyn std::error::Error>)` - If deserialization or database access fails.
+/// * `Err(Box<dyn Error>)` - If deserialization or database access fails.
 ///
 /// # Errors
 ///
 /// Returns an error if:
 /// - The underlying database fails during the lookup.
 /// - The stored data cannot be deserialized into an `UnownedPublicKey`.
-pub fn get_unowned_public_key(
-    id: &str,
-) -> Result<Option<UnownedPublicKey>, Box<dyn std::error::Error>> {
-    let db = PUBLIC_KEY_STORE.lock().unwrap();
+pub fn get_unowned_public_key(id: &str) -> Result<Option<UnownedPublicKey>, Box<dyn Error>> {
+    let db = PUBLIC_KEY_STORE.lock()?;
     match db.get(id) {
         Ok(Some(serialized)) => match bincode::deserialize(&serialized) {
             Ok(deserialized) => Ok(Some(deserialized)),
@@ -501,15 +494,15 @@ pub fn get_unowned_public_key(
 /// # Returns
 ///
 /// * `Ok(())` if the listing completes without error.
-/// * `Err(Box<dyn std::error::Error>)` if any RocksDB or deserialization errors occur.
+/// * `Err(Box<dyn Error>)` if any RocksDB or deserialization errors occur.
 ///
 /// # Errors
 ///
 /// Returns an error if:
 /// - Any entry fails to deserialize into an `UnownedPublicKey`.
 /// - The RocksDB iterator encounters an error during iteration.
-pub fn list_unowned_public_keys() -> Result<(), Box<dyn std::error::Error>> {
-    let db = PUBLIC_KEY_STORE.lock().unwrap();
+pub fn list_unowned_public_keys() -> Result<(), Box<dyn Error>> {
+    let db = PUBLIC_KEY_STORE.lock()?;
     let iter = db.iterator(rocksdb::IteratorMode::Start);
 
     println!("Unowned Public Keys:");
@@ -569,7 +562,7 @@ pub fn wipe_public_keystore() -> Result<(), Box<dyn Error>> {
 /// * `Ok(())` if the delete succeeded (even if the key didn't exist)
 /// * `Err(_)` if the underlying RocksDB delete failed
 pub fn delete_public_key(id: &str) -> Result<(), Box<dyn Error>> {
-    let db = PUBLIC_KEY_STORE.lock().unwrap();
+    let db = PUBLIC_KEY_STORE.lock()?;
     db.delete(id.as_bytes())
         .map_err(|e| Box::new(e) as Box<dyn Error>)?;
     Ok(())
@@ -612,9 +605,7 @@ pub fn does_public_key_exist(id: &str) -> Result<bool, Box<dyn Error>> {
 ///
 /// # Errors
 /// Returns an error if the input cannot be deserialized using `bincode`.
-pub fn get_id_from_serialized_public_key(
-    key_vec: &[u8],
-) -> Result<String, Box<dyn std::error::Error>> {
+pub fn get_id_from_serialized_public_key(key_vec: &[u8]) -> Result<String, Box<dyn Error>> {
     let key: UnownedPublicKey = bincode::deserialize(key_vec)?;
     Ok(key.id)
 }

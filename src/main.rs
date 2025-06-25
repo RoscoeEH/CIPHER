@@ -176,7 +176,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 .as_str(),
                         )? {
                             Some(k) => k,
-                            None => panic!("Signing key not found."),
+                            None => return Err("Signing key not found".into()),
                         };
                         let sign_private_key = utils::decrypt_private_key(&sign_key)?;
                         blob = utils::build_signed_blob(
@@ -263,7 +263,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     );
                 }
                 // The magic is unrecognized
-                _ => panic!("Unknown encryption format"),
+                _ => return Err("Unknown encryption format".into()),
             };
         }
         // Handles changed to default parameters
@@ -504,7 +504,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             let mut magic = [0u8; 4];
             cursor.read_exact(&mut magic)?;
             if &magic != b"KEY1" {
-                panic!("Bad magic");
+                return Err("Bad magic".into());
             }
 
             let key = raw[4..].to_vec();

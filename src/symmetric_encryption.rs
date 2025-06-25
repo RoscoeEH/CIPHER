@@ -139,10 +139,11 @@ pub fn id_encrypt(
     match alg_id {
         AES_GCM_ID => aead_base::<Aes256Gcm>(key, Some(nonce), data, aad, true),
         CHA_CHA_20_POLY_1305_ID => aead_base::<ChaCha20Poly1305>(key, Some(nonce), data, aad, true),
-        _ => panic!(
+        _ => Err(format!(
             "Attempted encryption with unsupported algorithm ID: {}",
             alg_id
-        ),
+        )
+        .into()),
     }
 }
 
@@ -172,10 +173,11 @@ pub fn id_decrypt(
     match alg_id {
         AES_GCM_ID => aead_base::<Aes256Gcm>(key, None, data, aad, false),
         CHA_CHA_20_POLY_1305_ID => aead_base::<ChaCha20Poly1305>(key, None, data, aad, false),
-        _ => panic!(
+        _ => Err(format!(
             "Attempted decryption with unsupported algorithm ID: {}",
             alg_id
-        ),
+        )
+        .into()),
     }
 }
 

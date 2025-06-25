@@ -83,18 +83,18 @@ pub fn alg_id_to_name(id: u8) -> &'static str {
     }
 }
 
-/// Parses a string into a `u32`, exiting the program with an error message if parsing fails.
+/// Parses a string into a `u32`, returning an error if parsing fails.
 ///
 /// # Arguments
-/// * `field` - The name of the field being parsed, used in the error message.
-/// * `value` - The string value to parse into a `u32`.
+/// - `field`: The name of the field being parsed, included in the error message.
+/// - `value`: The string value to parse into a `u32`.
 ///
 /// # Returns
-/// * The parsed `u32` value.
+/// - `Ok(u32)` containing the parsed value if successful.
+/// - `Err(Box<dyn Error>)` with a descriptive message if parsing fails.
 ///
-/// # Panics
-/// This function does not panic, but it will terminate the program with a message
-/// if parsing fails.
+/// # Errors
+/// Returns an error if the input string cannot be parsed into a valid `u32`.
 pub fn parse_u32(field: &str, value: &str) -> Result<u32, Box<dyn Error>> {
     value
         .parse::<u32>()
@@ -122,25 +122,27 @@ pub fn u64_to_datetime(ts: u64) -> Result<DateTime<Utc>, String> {
 
 /// Prompts the user for a password, optionally verifying it by re-entry.
 ///
-/// This function displays a context-specific prompt based on whether the key
-/// is symmetric, asymmetric, or unspecified. It securely reads the password
-/// input from the user and, if verification is enabled, prompts for re-entry
-/// to ensure they match. If the verification fails, the program exits with
-/// an error message.
+/// Displays a context-specific prompt depending on whether the key is symmetric,
+/// asymmetric, or unspecified. Reads the password securely from standard input.
+/// If verification is enabled, prompts the user to re-enter the password and
+/// checks that both entries match.
 ///
 /// # Arguments
-/// * `verify` - Whether to prompt the user to re-enter the password for verification.
-/// * `is_sym_key` - Optional flag to indicate if the password is for a symmetric key
-///   (`Some(true)`), asymmetric key (`Some(false)`), or unspecified (`None`).
+/// - `verify`: Whether to prompt the user for password verification by re-entry.
+/// - `is_sym_key`: Optional flag indicating key type:
+///    - `Some(true)`: symmetric key
+///    - `Some(false)`: asymmetric key
+///    - `None`: unspecified key type
 ///
 /// # Returns
-/// * `Secret<String>` - The password securely wrapped in a `Secret`.
+/// - `Ok(Secret<String>)`: The securely wrapped password if input succeeds and matches (if verifying).
+/// - `Err(Box<dyn Error>)`: If reading input fails or verification fails.
 ///
 /// # Panics
-/// Panics if reading the password fails due to an I/O error.
+/// Panics if reading the password encounters an I/O error.
 ///
 /// # Exits
-/// Exits the process with status 0 if password verification fails.
+/// Exits the process with an error if the password verification fails.
 pub fn get_password(
     verify: bool,
     is_sym_key: Option<bool>,
@@ -171,15 +173,16 @@ pub fn get_password(
 
 /// Reads the entire contents of a file into a byte vector.
 ///
-/// Opens the file at the specified path and reads all bytes into memory.
-/// Useful for loading binary or text data as raw bytes.
+/// Opens the file at the given path and reads all bytes into memory,
+/// returning the data as a vector of bytes. Suitable for reading both
+/// binary and text files as raw bytes.
 ///
 /// # Arguments
-/// * `path` - A string slice representing the path to the file.
+/// - `path`: A string slice specifying the file path to read.
 ///
 /// # Returns
-/// * `Result<Vec<u8>, Box<dyn Error>>` - Returns a `Vec<u8>` with the file contents on success,
-///   or an error boxed as `Box<dyn Error>` if the file cannot be opened or read.
+/// - `Ok(Vec<u8>)`: The full contents of the file as bytes on success.
+/// - `Err(Box<dyn Error>)`: An error if the file cannot be opened or read.
 pub fn read_file(path: &str) -> Result<Vec<u8>, Box<dyn Error>> {
     let mut file = File::open(path)?;
     let mut contents = Vec::new();
@@ -190,13 +193,16 @@ pub fn read_file(path: &str) -> Result<Vec<u8>, Box<dyn Error>> {
 
 /// Displays a warning message and prompts the user for confirmation before continuing.
 ///
-/// This function prints the provided message followed by a `[y/N]` prompt. If the user
-/// does not respond with `"y"` (case-insensitive), the program prints a cancellation
-/// message and exits with status code 0. Used to prevent accidental continuation of
-/// sensitive or destructive operations.
+/// This function prints the given warning message followed by a `[y/N]` prompt. If the user
+/// enters anything other than `"y"` (case-insensitive), it prints a cancellation message
+/// and exits the operation by returning an error.
 ///
 /// # Arguments
-/// * `message` - The warning message to display before prompting the user.
+/// - `message`: The warning message to show before the confirmation prompt.
+///
+/// # Returns
+/// - `Ok(())` if the user confirms with `"y"`.
+/// - `Err` if the user cancels or an I/O error occurs.
 ///
 /// # Exits
 /// Exits the process with status 0 if the user does not confirm with `"y"`.
@@ -217,6 +223,7 @@ pub fn warn_user(message: &str) -> Result<(), Box<dyn Error>> {
 
     Ok(())
 }
+
 // === Key use helpers ===
 
 /// Contains metadata and material for a derived cryptographic key.
@@ -239,20 +246,18 @@ pub struct DerivedKeyInfo {
 
 /// Derives a symmetric encryption key using CLI arguments and user profile settings.
 ///
-/// This function selects a key derivation function (KDF) based on the CLI arguments
-/// or defaults to the user profile's configured KDF. It prompts the user for a password
-/// (with verification), generates a random salt, and derives the encryption key using
-/// the specified KDF and profile parameters.
+/// This function determines which key derivation function (KDF) to use based on the
+/// provided CLI arguments or defaults to the user's profile KDF. It securely prompts
+/// the user for a password (with verification), generates a random salt, and derives
+/// the key using the specified KDF and profile parameters.
 ///
 /// # Arguments
-/// * `args` - Command-line arguments that may specify a custom KDF name.
-/// * `profile` - The user's cryptographic profile containing default KDF ID and parameters.
+/// - `args`: Command-line arguments which may specify a custom KDF name.
+/// - `profile`: The user profile containing default KDF ID and parameter settings.
 ///
 /// # Returns
-/// * `DerivedKeyInfo` - Struct containing the derived key, salt, KDF ID, and parameters.
-///
-/// # Panics
-/// Panics if the specified or resolved KDF ID is unsupported, or if password input fails.
+/// - `Ok(DerivedKeyInfo)`: Contains the derived key bytes, salt, KDF ID, and parameters.
+/// - `Err`: If an unsupported KDF ID is specified, password input fails, or derivation fails.
 pub fn generate_key_from_args(
     args: &EncryptArgs,
     profile: &UserProfile,
@@ -281,24 +286,24 @@ pub fn generate_key_from_args(
     })
 }
 
-/// Derives a symmetric encryption key from stored metadata and user-provided password.
+/// Derives a symmetric encryption key from stored metadata and a user-provided password.
 ///
-/// This function uses stored key metadata (including KDF ID, salt, and parameters)
-/// to derive a key from the user’s password. It verifies the derived key against a
-/// stored hash to ensure correctness and increments the key usage counter if verified.
-/// The updated key metadata is then persisted back to storage.
+/// This function uses stored key metadata—including the KDF ID, salt, and derivation parameters—
+/// to derive a symmetric key from the given password. It verifies the correctness of the
+/// derived key by comparing its hash against a stored verification hash. Upon successful
+/// verification, the function increments the key's usage count and updates the stored metadata.
 ///
 /// # Arguments
-/// * `sym_key` - A mutable reference to the stored symmetric key metadata.
-/// * `password` - The user-provided password, securely wrapped in a `Secret`.
+/// - `sym_key`: Mutable reference to the stored symmetric key metadata.
+/// - `password`: The user’s password securely wrapped in a `Secret`.
 ///
 /// # Returns
-/// * `Result<DerivedKeyInfo, String>` - On success, returns a struct with the derived
-///    key, KDF ID, salt, and parameters. Returns an error if verification fails or
-///    storing the key metadata fails.
+/// - `Ok(DerivedKeyInfo)`: Contains the derived key, KDF ID, salt, and parameters on success.
+/// - `Err`: If key verification fails or storing the updated key metadata fails.
 ///
-/// # Panics
-/// Panics if an unsupported KDF ID is specified or password input fails.
+/// # Errors
+/// Returns an error if key verification fails, if persisting the updated key metadata fails,
+/// or if the specified KDF ID is unsupported.
 pub fn derive_key_from_stored(
     sym_key: &mut SymKey,
     password: Secret<String>,
@@ -330,26 +335,24 @@ pub fn derive_key_from_stored(
 /// Generates an asymmetric keypair and securely stores it using a password-derived KEK.
 ///
 /// This function retrieves the specified user profile (or initializes the default if not found),
-/// determines the algorithm ID from the input name, and generates a new keypair using that algorithm.
-/// The private key is then encrypted using a symmetric key derived from the user's password
-/// and profile-based key derivation settings. The resulting encrypted keypair, along with metadata,
-/// is persisted to the keystore.
+/// resolves the algorithm ID from the provided name, and generates a new asymmetric keypair
+/// using that algorithm. It then derives a Key Encryption Key (KEK) from the user's password
+/// and profile's key derivation settings, which is used to encrypt the private key. The encrypted
+/// private key, public key, and related metadata are stored securely in the keystore.
 ///
 /// # Arguments
-/// * `asym_id` - The name of the asymmetric algorithm (e.g., `"rsa"` or `"ecc"`).
-/// * `password` - The user-supplied password used to derive a Key Encryption Key (KEK).
-/// * `profile_id` - The ID of the user profile specifying encryption and KDF settings.
-/// * `name` - A name to associate with the stored keypair.
-/// * `bits` - Key size or curve size in bits (depending on the algorithm).
+/// - `asym_id`: The name of the asymmetric algorithm (e.g., `"rsa"` or `"ecc"`).
+/// - `password`: The user-supplied password used to derive the KEK.
+/// - `profile_id`: The user profile ID specifying AEAD and KDF parameters.
+/// - `name`: A unique identifier to associate with the stored keypair.
+/// - `bits`: The key size or curve size in bits (algorithm-dependent).
 ///
 /// # Returns
-/// * `Result<(), Box<dyn Error>>` - Indicates success or failure during key generation or storage.
-///
-/// # Panics
-/// Panics if the algorithm name is invalid, encryption fails, or storage fails unexpectedly.
+/// - `Ok(())` if the keypair is successfully generated and stored.
+/// - `Err` if any step in profile retrieval, key generation, key derivation, encryption, or storage fails.
 ///
 /// # Errors
-/// Returns an error if profile lookup, key derivation, or encryption fails.
+/// Returns an error if profile lookup, algorithm ID resolution, key derivation, encryption, or storage fails.
 pub fn gen_asym_key(
     asym_id: String,
     password: Secret<String>,
@@ -396,27 +399,24 @@ pub fn gen_asym_key(
     Ok(())
 }
 
-/// Generates a symmetric key from a password and stores it with metadata for future use.
+/// Generates a new symmetric key by deriving it from the provided password and profile settings.
 ///
-/// This function retrieves the specified user profile (or initializes the default if not found),
-/// then derives a symmetric key using the profile's key derivation function (KDF) parameters.
-/// It generates a random salt and uses the provided password to derive the key.
-/// The derived key is not stored directly; instead, a hash of the key is saved for later verification,
-/// along with KDF parameters, salt, and metadata.
+/// This function generates a random salt and uses the provided password to derive the key.
+/// The derived key itself is not stored; instead, a hash of the key is saved for future verification,
+/// along with KDF parameters, salt, and related metadata.
 ///
 /// # Arguments
-/// * `password` - The user-provided password, securely wrapped in a `Secret<String>`.
-/// * `profile_id` - The ID of the user profile defining the KDF method and its parameters.
-/// * `name` - A unique name to associate with the stored symmetric key.
+/// - `password`: The user-provided password, securely wrapped in a `Secret<String>`.
+/// - `profile_id`: The ID of the user profile defining the KDF method and its parameters.
+/// - `name`: A unique name to associate with the stored symmetric key.
 ///
 /// # Returns
-/// * `Result<(), Box<dyn Error>>` - Indicates success or error in key generation or storage.
-///
-/// # Panics
-/// Panics if storing the key fails unexpectedly.
+/// - `Ok(())` if the key is successfully derived and stored.
+/// - `Err` if profile retrieval, key derivation, hashing, or storage fails.
 ///
 /// # Errors
-/// Returns an error if the profile cannot be retrieved or initialized, or if key derivation fails.
+/// Returns an error if the profile cannot be retrieved or initialized, if key derivation fails,
+/// or if storing the key metadata fails.
 pub fn gen_sym_key(
     password: Secret<String>,
     profile_id: String,
@@ -474,28 +474,27 @@ impl PublicKeyEntry {
     }
 }
 
-/// Attempts to retrieve a public key by ID, checking both unowned and owned key stores.
+/// Attempts to retrieve a public key by ID from unowned keys first, then optionally from owned keys.
 ///
-/// This function first looks for an unowned public key matching the provided ID. If not found,
-/// it optionally prompts the user (unless `quiet` is true) before attempting to load an owned
-/// asymmetric key pair with the same ID. Returns a wrapped `PublicKeyEntry` if a matching key
-/// is found, or `Ok(None)` if no matching key is available or the type is incompatible.
+/// This function first tries to find an unowned public key with the given `key_id`.
+/// If found, it returns the key wrapped as `PublicKeyEntry::Unowned`.
+///
+/// If no unowned key is found, and if `quiet` is `false`, it proceeds to attempt loading
+/// an owned asymmetric keypair with the same ID without prompting the user.
+/// If the user prompt was part of an earlier version, it is now removed.
+///
+/// If the owned keypair is found and matches the expected type (`AsymKeyPair`), it is returned
+/// wrapped as `PublicKeyEntry::Owned`. If no owned key is found or the type does not match,
+/// returns `Ok(None)`.
 ///
 /// # Arguments
-/// * `key_id` - The identifier of the public key to retrieve.
-/// * `quiet` - If `true`, suppresses user interaction and warnings when falling back to owned keys.
+/// * `key_id` - The identifier of the key to look up.
+/// * `quiet` - If `true`, suppresses any user interaction or warnings (currently no prompts).
 ///
 /// # Returns
-/// * `Result<Option<PublicKeyEntry>, Box<dyn Error>>` -
-///   - `Ok(Some(PublicKeyEntry))` if a matching key is found.
-///   - `Ok(None)` if no key matches or a type mismatch occurs.
-///   - `Err` if a non-recoverable error occurs during key retrieval.
-///
-/// # Panics
-/// Panics if the unowned key check fails unexpectedly.
-///
-/// # Exits
-/// Exits the process if the user declines to fall back to owned keys (when `quiet` is `false`).
+/// * `Ok(Some(PublicKeyEntry))` if a matching unowned or owned key is found.
+/// * `Ok(None)` if no matching key is found or if the owned key type is incompatible.
+/// * `Err` if an unexpected error occurs during retrieval.
 pub fn get_unowned_or_owned_public_key(
     key_id: &str,
     quiet: bool,
@@ -901,9 +900,6 @@ pub fn encrypt_sym_blob(
 ///    - A header with metadata about the key and data.
 ///    - The data itself.
 ///    - A signature of the concatenated header and data.
-///
-/// # Panics
-/// Panics if the signing process fails (e.g., if the private key cannot be used to sign the data).
 ///
 /// # Errors
 /// Returns an error if the signing operation encounters an issue, such as key mismatch or cryptographic failure.

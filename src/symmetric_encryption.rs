@@ -34,10 +34,13 @@ use crate::constants::*;
 ///
 /// # Returns
 /// - `Ok(Vec<u8>)`: Encrypted ciphertext with prepended nonce (on encryption), or plaintext (on decryption).
-/// - `Err(AeadError)`: If encryption or decryption fails, or input sizes are invalid.
+/// - `Err(Box<dyn Error>)`: If encryption or decryption fails, or input sizes are invalid.
 ///
-/// # Panics
-/// Panics if key or nonce sizes do not match the expected sizes for the cipher.
+/// # Errors
+/// Returns an error if:
+/// - The key length does not match the expected size for the cipher.
+/// - The nonce length (if provided) does not match the expected size for the cipher.
+/// - Encryption or decryption operations fail due to invalid input or authentication failure.
 fn aead_base<C>(
     key: &[u8],
     nonce: Option<&[u8]>,
@@ -125,10 +128,12 @@ where
 ///
 /// # Returns
 /// - `Ok(Vec<u8>)`: The resulting ciphertext with the nonce prepended (as handled in `aead_base`).
-/// - `Err(aead::Error)`: If encryption fails due to input validation or AEAD operation.
+/// - `Err(Box<dyn Error>)`: If encryption fails due to input validation or AEAD operation.
 ///
-/// # Panics
-/// Panics if an unsupported algorithm ID is provided.
+/// # Errors
+/// Returns an error if:
+/// - The provided `alg_id` is unsupported.
+/// - The underlying `aead_base` function fails due to invalid inputs or encryption errors.
 pub fn id_encrypt(
     alg_id: u8,
     key: &[u8],
@@ -160,10 +165,12 @@ pub fn id_encrypt(
 ///
 /// # Returns
 /// - `Ok(Vec<u8>)`: The decrypted plaintext if authentication and decryption succeed.
-/// - `Err(aead::Error)`: If decryption or authentication fails (e.g., due to tampering).
+/// - `Err(Box<dyn Error>)`: If decryption or authentication fails (e.g., due to tampering).
 ///
-/// # Panics
-/// Panics if an unsupported algorithm ID is provided.
+/// # Errors
+/// Returns an error if:
+/// - The provided `alg_id` is unsupported.
+/// - The underlying `aead_base` function fails due to invalid inputs or decryption/authentication errors.
 pub fn id_decrypt(
     alg_id: u8,
     key: &[u8],

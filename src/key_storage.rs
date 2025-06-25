@@ -147,19 +147,20 @@ impl HasId for SymKey {
 /// and stores it in a global key store using its identifier as the key.
 ///
 /// # Arguments
-/// - `key`: A reference to the object to be stored.
+///
+/// * `key` - A reference to the object to be stored.
 ///
 /// # Returns
-/// - `Ok(())` if the key was successfully serialized and stored.
-/// - `Err(Box<dyn Error>)` if serialization or database insertion fails.
+///
+/// * `Ok(())` if the key was successfully serialized and stored.
+/// * `Err(Box<dyn Error>)` if serialization, locking, or database insertion fails.
 ///
 /// # Errors
+///
 /// This function returns an error if:
+/// - Locking the global `KEY_STORE` mutex fails.
 /// - Serialization using `bincode` fails.
 /// - The key store (`KEY_STORE`) fails to insert the serialized data.
-///
-/// # Panics
-/// - This function will panic if locking the global `KEY_STORE` mutex fails.
 pub fn store_key<T: Serialize + HasId>(key: &T) -> Result<(), Box<dyn Error>> {
     let serialized = bincode::serialize(key).map_err(|e| Box::new(e) as Box<dyn Error>)?;
 
@@ -178,20 +179,21 @@ pub fn store_key<T: Serialize + HasId>(key: &T) -> Result<(), Box<dyn Error>> {
 /// and returns it if found.
 ///
 /// # Arguments
-/// - `id`: The identifier of the key to retrieve.
+///
+/// * `id` - The identifier of the key to retrieve.
 ///
 /// # Returns
-/// - `Ok(Some(T))` if the key is found and successfully deserialized.
-/// - `Ok(None)` if no key with the given ID exists.
-/// - `Err(Box<dyn Error>)` if deserialization or database access fails.
+///
+/// * `Ok(Some(T))` if the key is found and successfully deserialized.
+/// * `Ok(None)` if no key with the given ID exists.
+/// * `Err(Box<dyn Error>)` if locking, deserialization, or database access fails.
 ///
 /// # Errors
+///
 /// This function returns an error if:
+/// - Locking the global `KEY_STORE` mutex fails.
 /// - Deserialization using `bincode` fails.
 /// - The key store (`KEY_STORE`) fails to retrieve the data.
-///
-/// # Panics
-/// This function will panic if locking the global `KEY_STORE` mutex fails.
 pub fn get_key<T: DeserializeOwned>(id: &str) -> Result<Option<T>, Box<dyn Error>> {
     let db = KEY_STORE.lock()?;
     match db.get(id) {
@@ -206,25 +208,32 @@ pub fn get_key<T: DeserializeOwned>(id: &str) -> Result<Option<T>, Box<dyn Error
 
 /// Lists all stored keys from the key store.
 ///
-/// This function iterates through all entries in the global `KEY_STORE`, attempts to
-/// deserialize each value as either an `AsymKeyPair` or `SymKey`, and prints human-readable
-/// metadata for each recognized key.
+/// This function iterates through all entries in the global `KEY_STORE`,
+/// attempts to deserialize each entry as either an `AsymKeyPair` or a `SymKey`,
+/// and prints human-readable metadata for each recognized key.
 ///
 /// # Returns
-/// * `Ok(())` on success.
-/// * `Err` if any key retrieval or deserialization operation fails.
+///
+/// * `Ok(())` if the listing completes successfully.
+/// * `Err(Box<dyn Error>)` if locking the key store, iteration, or deserialization fails.
 ///
 /// # Output
-/// Prints:
+///
+/// Prints the following details for each key:
 /// - Key ID
-/// - Key type (asymmetric with algorithm name or symmetric with KDF ID)
-/// - Creation timestamp
-/// - Additional metadata like public key length or use count.
+/// - Key type (asymmetric with algorithm name, or symmetric with KDF ID)
+/// - Creation timestamp (formatted as a date/time)
+/// - Additional metadata such as public key length (for asymmetric keys) or use count (for symmetric keys)
 ///
 /// # Errors
-/// Returns an error if:
+///
+/// This function returns an error if:
+/// - Locking the global `KEY_STORE` mutex fails.
 /// - Iteration over the key store fails.
-/// - A value in the key store cannot be read.
+/// - Deserialization of a key entry fails unexpectedly.
+///
+/// If a key entry cannot be deserialized as either recognized type, a warning is printed,
+/// but the function continues processing other keys.
 pub fn list_keys() -> Result<(), Box<dyn Error>> {
     let db = KEY_STORE.lock()?;
     let iter = db.iterator(rocksdb::IteratorMode::Start);
@@ -264,21 +273,24 @@ pub fn list_keys() -> Result<(), Box<dyn Error>> {
 
 /// Wipes all data from the key store by deleting and recreating the underlying database.
 ///
-/// This function permanently deletes the RocksDB instance at the configured key store path,
-/// removing all stored keys. It then reinitializes the database to ensure it's ready for reuse.
+/// This function permanently deletes the RocksDB instance located at the configured key store path,
+/// removing all stored keys. After deletion, it reinitializes the database to ensure it is ready for future use.
 ///
 /// # Returns
-/// * `Ok(())` on success.
-/// * `Err` if the database cannot be destroyed or recreated.
+///
+/// * `Ok(())` if the wipe and reinitialization succeed.
+/// * `Err(Box<dyn Error>)` if the database cannot be destroyed or recreated.
 ///
 /// # Side Effects
-/// - Permanently deletes all keys.
-/// - Reinitializes an empty key store at the same location.
+///
+/// - Permanently deletes all stored keys.
+/// - Recreates an empty key store at the same location.
 ///
 /// # Errors
+///
 /// Returns an error if:
-/// - The key store cannot be destroyed (e.g., path permissions issues (may implement this)).
-/// - The key store cannot be recreated.
+/// - The key store cannot be destroyed (e.g., due to permission issues).
+/// - The key store cannot be reopened after deletion.
 pub fn wipe_keystore() -> Result<(), Box<dyn Error>> {
     let keystore_path = get_keystore_path()?;
 
@@ -291,14 +303,20 @@ pub fn wipe_keystore() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Deletes a single key by its ID from the keystore.
+/// Deletes a single key from the keystore by its identifier.
 ///
 /// # Arguments
-/// * `id` – the identifier of the key to remove
+///
+/// * `id` - The string identifier of the key to delete.
 ///
 /// # Returns
-/// * `Ok(())` if the delete succeeded (even if the key didn't exist)
-/// * `Err(_)` if the underlying RocksDB delete failed
+///
+/// * `Ok(())` if the key was successfully deleted or did not exist.
+/// * `Err(Box<dyn Error>)` if the underlying database delete operation fails.
+///
+/// # Notes
+///
+/// Deleting a non-existent key is treated as a successful operation.
 pub fn delete_key(id: &str) -> Result<(), Box<dyn Error>> {
     let db = KEY_STORE.lock()?;
     db.delete(id.as_bytes())
@@ -306,20 +324,25 @@ pub fn delete_key(id: &str) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Checks if a key with the given ID exists in the keystore.
+/// Checks for the existence of a key in the keystore by ID.
 ///
-/// This function attempts to look up both symmetric (`SymKey`) and asymmetric (`AsymKeyPair`)
-/// key entries with the provided ID. If either exists, the function returns `true`.
+/// This function searches for both symmetric and asymmetric keys with the given identifier.
+/// If either exists, the function returns `true`. Errors during individual lookups are ignored,
+/// assuming absence.
 ///
 /// # Arguments
-/// * `id` - The string identifier of the key to check for existence.
+///
+/// * `id` - The identifier of the key to check.
 ///
 /// # Returns
-/// * `Result<bool, Box<dyn Error>>` - Returns `Ok(true)` if a key with the given ID exists,
-///   `Ok(false)` if not, or an `Err` if an unexpected error occurs during lookup.
+///
+/// * `Ok(true)` if a key with the given ID exists.
+/// * `Ok(false)` if no such key exists.
+/// * `Err(Box<dyn Error>)` if a failure occurs when accessing the key store.
 ///
 /// # Notes
-/// Errors from individual key lookups are ignored (assumed as "not found").
+///
+/// Errors during lookup of individual key types are suppressed and treated as "not found".
 pub fn does_key_exist(id: &str) -> Result<bool, Box<dyn Error>> {
     // Check if a symmetric or asymmetric key with the same ID already exists
     let sym_key_exists = match get_key::<SymKey>(id) {
@@ -571,7 +594,7 @@ pub fn delete_public_key(id: &str) -> Result<(), Box<dyn Error>> {
 /// Checks if a public key with the given ID exists in the keystore.
 ///
 /// This function attempts to look up unowned public key entries
-/// with the provided ID. If either exists, the function returns `true`.
+/// with the provided ID. If found, the function returns `true`.
 ///
 /// # Arguments
 /// * `id` - The string identifier of the key to check for existence.

@@ -70,14 +70,21 @@ pub struct UserProfile {
 
 /// Stores a `UserProfile` in the profiles database.
 ///
-/// Serializes the provided profile and saves it to the key-value store under its `id`.
-/// This allows the profile to be retrieved later for cryptographic operations.
+/// This function serializes the provided `UserProfile` and saves it to the
+/// key-value store using the profile's `id` as the key. This enables future
+/// retrieval and use of the profile for cryptographic or identity operations.
 ///
 /// # Arguments
 /// - `profile`: A reference to the `UserProfile` to store.
 ///
+/// # Returns
+/// - `Ok(())` if the profile is successfully serialized and stored.
+/// - `Err(Box<dyn Error>)` if serialization or database storage fails.
+///
 /// # Errors
-/// Returns an error if serialization fails or if the database operation encounters an issue.
+/// Returns an error if:
+/// - Serialization of the `UserProfile` fails.
+/// - The underlying database operation (put) fails.
 pub fn set_profile(profile: &UserProfile) -> Result<(), Box<dyn Error>> {
     let db = PROFILES_DB.lock()?;
 
@@ -88,16 +95,22 @@ pub fn set_profile(profile: &UserProfile) -> Result<(), Box<dyn Error>> {
 
 /// Retrieves a `UserProfile` by its ID from the profiles database.
 ///
-/// Attempts to fetch and deserialize the profile associated with the given ID from the
-/// key-value store. If no profile is found, returns `Ok(None)`.
+/// This function looks up the profile associated with the given `id` in the
+/// key-value store and attempts to deserialize it. If the profile is not found,
+/// it returns `Ok(None)`.
 ///
 /// # Arguments
-/// - `id`: The ID of the profile to retrieve.
+/// - `id`: The string identifier of the profile to retrieve.
 ///
 /// # Returns
-/// - `Ok(Some(UserProfile))` if the profile exists and is successfully deserialized.
-/// - `Ok(None)` if no profile is found with the given ID.
-/// - An error if the database read or deserialization fails.
+/// - `Ok(Some(UserProfile))` if a profile with the given ID exists and deserialization succeeds.
+/// - `Ok(None)` if no profile is found for the provided ID.
+/// - `Err(Box<dyn Error>)` if a database read or deserialization error occurs.
+///
+/// # Errors
+/// Returns an error if:
+/// - The database retrieval operation fails.
+/// - The stored data cannot be deserialized into a `UserProfile`.
 pub fn get_profile(id: &str) -> Result<Option<UserProfile>, Box<dyn Error>> {
     let db = PROFILES_DB.lock()?;
 
@@ -111,18 +124,23 @@ pub fn get_profile(id: &str) -> Result<Option<UserProfile>, Box<dyn Error>> {
 
 /// Initializes and returns the default `UserProfile`.
 ///
-/// Checks if a profile with the ID `"Default"` exists in the profile store. If it does,
-/// the existing profile is returned. If not, a new default profile is created with
-/// sensible cryptographic defaults and stored in the database.
+/// This function checks if a profile with the ID `"Default"` already exists in the
+/// profile store. If found, it returns the existing profile. Otherwise, it creates
+/// a new default profile with predefined cryptographic parameters and saves it.
 ///
 /// The default profile uses:
-/// - `CHA_CHA_20_POLY_1305_ID` for AEAD
-/// - `ARGON2_ID` for key derivation
-/// - Standard parameters for both Argon2 and PBKDF2 to ensure compatibility
+/// - AEAD algorithm ID: `CHA_CHA_20_POLY_1305_ID`
+/// - Key derivation function ID: `ARGON2_ID`
+/// - Standard parameters for Argon2 and PBKDF2 to ensure compatibility and security.
 ///
 /// # Returns
-/// - `Ok(UserProfile)` containing the default or newly created profile.
-/// - An error if reading or writing the profile fails.
+/// - `Ok(UserProfile)` containing either the existing or newly created default profile.
+/// - `Err(Box<dyn Error>)` if reading from or writing to the profile store fails.
+///
+/// # Errors
+/// Returns an error if:
+/// - The attempt to read the existing default profile from the database fails.
+/// - Serialization or database write operations fail when storing a new profile.
 pub fn init_profile() -> Result<UserProfile, Box<dyn Error>> {
     let default_id = "Default";
 
@@ -152,17 +170,22 @@ pub fn init_profile() -> Result<UserProfile, Box<dyn Error>> {
 
 /// Creates a new `UserProfile` by cloning the default profile with a new ID.
 ///
-/// Loads the default profile using `init_profile`, assigns it the provided `new_id`,
-/// and stores the new profile in the profile store.
+/// This function initializes the default profile using `init_profile()`, then
+/// clones it by assigning the provided `new_id` to the profile's ID field. The
+/// new profile is then stored in the profile store.
 ///
 /// # Arguments
-/// * `new_id` - The unique identifier for the new profile.
+/// - `new_id`: The unique identifier for the new profile.
 ///
 /// # Returns
-/// * `UserProfile` with the updated ID.
+/// - `Ok(UserProfile)`: The newly created profile with the updated ID.
+/// - `Err(Box<dyn Error>)`: If initializing the default profile or storing the
+///   new profile fails.
 ///
-/// # Panics
-/// Panics if the default profile cannot be initialized or if storing the new profile fails.
+/// # Errors
+/// Returns an error if:
+/// - The default profile cannot be initialized.
+/// - Serialization or database write operations fail when saving the new profile.
 pub fn get_new_profile(new_id: String) -> Result<UserProfile, Box<dyn Error>> {
     let mut base_profile = init_profile()?;
     base_profile.id = new_id;
@@ -172,12 +195,22 @@ pub fn get_new_profile(new_id: String) -> Result<UserProfile, Box<dyn Error>> {
 
 /// Lists all stored user profiles from the profile database.
 ///
-/// Iterates through all entries in the profile store, deserializes each `UserProfile`,
-/// and prints a summary including ID, AEAD algorithm, KDF, and key derivation parameters.
+/// Iterates over all entries in the profile store, deserializes each `UserProfile`,
+/// and prints a summary of each profile including:
+/// - ID
+/// - AEAD algorithm name
+/// - KDF algorithm name
+/// - Key derivation parameters such as memory cost, time cost, parallelism, and iterations
 ///
 /// # Returns
-/// * `Ok(())` if listing succeeds.
-/// * `Err` if there is a database or deserialization error.
+/// - `Ok(())` if all profiles are successfully listed.
+/// - `Err(Box<dyn Error>)` if a database read or deserialization error occurs.
+///
+/// # Errors
+/// Returns an error if:
+/// - Accessing the RocksDB iterator fails.
+/// - A profile entry fails to deserialize.
+/// - Key bytes cannot be converted to UTF-8 string.
 pub fn list_profiles() -> Result<(), Box<dyn Error>> {
     let db = PROFILES_DB.lock()?;
 
@@ -218,13 +251,18 @@ pub fn list_profiles() -> Result<(), Box<dyn Error>> {
 
 /// Completely removes all stored user profiles from the profile database.
 ///
-/// This function destroys the existing database at the profile storage path,
-/// removing all data. It then recreates an empty database to ensure
-/// the system remains in a usable state.
+/// This function permanently deletes the RocksDB instance located at the profile
+/// database path, erasing all stored profiles. After destruction, it recreates
+/// a new empty database at the same location to ensure the profile store is usable.
 ///
 /// # Returns
-/// * `Ok(())` on successful wipe and reinitialization.
-/// * `Err` if there is an error destroying or reopening the database.
+/// - `Ok(())` if the database was successfully destroyed and recreated.
+/// - `Err(Box<dyn Error>)` if destroying or reopening the database fails.
+///
+/// # Errors
+/// Returns an error if:
+/// - The database cannot be destroyed (e.g., due to file permission issues).
+/// - The database cannot be reopened after destruction.
 pub fn wipe_profiles() -> Result<(), Box<dyn Error>> {
     let db_path = get_db_path()?;
 

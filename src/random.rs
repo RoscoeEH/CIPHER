@@ -15,41 +15,57 @@ use rand::rngs::OsRng;
 use rand::RngCore;
 use std::error::Error;
 
-/// Generates a cryptographically secure random byte vector of the specified length.
+/// Generates a vector of cryptographically secure random bytes with the specified size.
 ///
-/// Uses the operating system's cryptographically secure random number generator (`OsRng`)
-/// to fill a buffer with random bytes.
+/// Relies on the operating system’s secure random number generator (`OsRng`)
+/// to populate a buffer with unpredictable byte values.
 ///
 /// # Arguments
-/// * `length` - Number of random bytes to generate.
+/// * `length` - The number of random bytes to produce.
 ///
 /// # Returns
-/// A `Vec<u8>` containing the generated random bytes.
+/// A `Result` containing a `Vec<u8>` with the securely generated random bytes,
+/// or an error if random byte generation fails.
 ///
-/// # Panics
-/// May panic if the OS random number generator fails, though this is highly unlikely.
+/// # Errors
+/// Returns an error if the operating system’s random number generator is unavailable
+/// or fails to provide sufficient entropy.
 pub fn get_random_val(length: usize) -> Result<Vec<u8>, Box<dyn Error>> {
     let mut val = vec![0u8; length];
-    OsRng.fill_bytes(&mut val);
+    OsRng.try_fill_bytes(&mut val)?;
     Ok(val)
 }
 
 /// Generates a 12-byte cryptographically secure random nonce.
 ///
-/// This is typically used for AEAD encryption schemes that require a 96-bit (12-byte) nonce.
+/// Commonly used in AEAD encryption algorithms that require a 96-bit nonce for
+/// ensuring uniqueness and preventing replay attacks.
 ///
 /// # Returns
-/// A `Vec<u8>` containing 12 securely generated random bytes.
+/// A `Result` containing a `Vec<u8>` with 12 securely generated random bytes,
+/// or an error if random byte generation fails.
+///
+/// # Errors
+/// Returns an error if the operating system’s random number generator is unavailable
+/// or fails to provide sufficient entropy.
+
 pub fn get_nonce() -> Result<Vec<u8>, Box<dyn Error>> {
     get_random_val(12)
 }
 
 /// Generates a 16-byte cryptographically secure random salt.
 ///
-/// This is typically used for KDF schemes that require a 128-bit (16-byte) nonce.
+/// Typically used in key derivation functions (KDFs) that require a 128-bit salt to
+/// introduce randomness and defend against precomputation attacks.
 ///
 /// # Returns
-/// A `Vec<u8>` containing 16 securely generated random bytes.
+/// A `Result` containing a `Vec<u8>` with 16 securely generated random bytes,
+/// or an error if random byte generation fails.
+///
+/// # Errors
+/// Returns an error if the operating system’s random number generator is unavailable
+/// or fails to provide sufficient entropy.
+
 pub fn get_salt() -> Result<Vec<u8>, Box<dyn Error>> {
     get_random_val(16)
 }

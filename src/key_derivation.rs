@@ -95,7 +95,7 @@ fn argon2_derive_key(
 /// * `password` - A secret string representing the user password.
 /// * `salt` - A byte slice used as the salt in key derivation.
 /// * `dklen` - Desired length of the derived key in bytes.
-/// * `iters` - Optional number of iterations (default: 100,000).
+/// * `iters` - Optional number of iterations (default: 600,000).
 ///
 /// # Returns
 ///

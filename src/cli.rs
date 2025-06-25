@@ -45,7 +45,6 @@ fn validate_path(path_str: &str) -> Result<(), Box<dyn Error>> {
         Err(format!("Path does not exist: {}", path_str).into())
     }
 }
-
 /// Validates that the provided key derivation function (KDF) name is supported.
 ///
 /// This function checks whether the given KDF name exists in the predefined list
@@ -126,8 +125,8 @@ pub trait Validatable {
 /// Validates command-line arguments by calling the `validate` method on a `Validatable` type.
 ///
 /// This function is intended to be used in CLI applications. It calls the `validate`
-/// method on the given arguments object. If validation fails, it prints an error message
-/// to stderr (including the source of the error, if available) and exits the process with code 1.
+/// method on the given arguments object. If validation fails, it returns an error
+/// containing the failure message and its source.
 ///
 /// # Type Parameters
 ///
@@ -137,10 +136,14 @@ pub trait Validatable {
 ///
 /// * `args` - A reference to a struct implementing `Validatable`, representing parsed CLI arguments.
 ///
+/// # Returns
+///
+/// * `Ok(())` - If validation succeeds.
+/// * `Err(Box<dyn Error>)` - If validation fails, including the error message and its source.
+///
 /// # Behavior
 ///
-/// * Prints an error and exits the program if validation fails.
-/// * Continues execution silently if validation succeeds.
+/// This function does not exit the process but returns an error for the caller to handle.
 pub fn validate_args<T: Validatable>(args: &T) -> Result<(), Box<dyn Error>> {
     if let Err(e) = args.validate() {
         let mut msg = format!("Invalid input: {}", e);

@@ -21,6 +21,8 @@ use crate::key_storage::{
 use crate::random::{get_nonce, get_salt};
 use crate::symmetric_encryption::{id_decrypt, id_encrypt};
 use crate::user::{get_profile, init_profile, UserProfile};
+use base64::{engine::general_purpose, Engine as _};
+use copypasta::{ClipboardContext, ClipboardProvider};
 
 use chrono::{DateTime, Utc};
 use rpassword::read_password;
@@ -31,6 +33,7 @@ use std::env;
 use std::error::Error;
 use std::fs::File;
 use std::io::{self, Read, Write};
+use std::path::PathBuf;
 
 // === String/int convertions ===
 
@@ -191,6 +194,44 @@ pub fn read_file(path: &str) -> Result<Vec<u8>, Box<dyn Error>> {
     Ok(contents)
 }
 
+/// Reads the current contents of the system clipboard into a byte vector.
+///
+/// Retrieves text data from the clipboard and converts it into a `Vec<u8>`
+/// using UTF-8 encoding. This function is suitable for accessing clipboard
+/// contents as raw bytes, typically for text-based data.
+///
+/// # Returns
+/// - `Ok(Vec<u8>)`: The clipboard contents as a UTF-8 encoded byte vector on success.
+/// - `Err(Box<dyn Error>)`: An error if the clipboard cannot be accessed or does not contain valid UTF-8 text.
+pub fn read_clipboard() -> Result<Vec<u8>, Box<dyn Error>> {
+    let mut ctx =
+        ClipboardContext::new().map_err(|e: Box<dyn Error + Send + Sync>| e as Box<dyn Error>)?;
+    let contents = ctx
+        .get_contents()
+        .map_err(|e: Box<dyn Error + Send + Sync>| e as Box<dyn Error>)?;
+    Ok(contents.into_bytes())
+}
+
+/// Encodes the byte vector as base64 and writes it to the system clipboard.
+///
+/// # Arguments
+/// - `data`: Encrypted data as a byte vector (any binary).
+///
+/// # Returns
+/// - `Ok(())`: On successful write.
+/// - `Err(Box<dyn Error>)`: If clipboard access or encoding fails.
+pub fn write_clipboard(data: Vec<u8>) -> Result<(), Box<dyn Error>> {
+    let encoded = general_purpose::STANDARD.encode(&data);
+
+    let mut ctx =
+        ClipboardContext::new().map_err(|e: Box<dyn Error + Send + Sync>| e as Box<dyn Error>)?;
+
+    ctx.set_contents(encoded)
+        .map_err(|e: Box<dyn Error + Send + Sync>| e as Box<dyn Error>)?;
+
+    Ok(())
+}
+
 /// Displays a warning message and prompts the user for confirmation before continuing.
 ///
 /// This function prints the given warning message followed by a `[y/N]` prompt. If the user
@@ -222,6 +263,34 @@ pub fn warn_user(message: &str) -> Result<(), Box<dyn Error>> {
     }
 
     Ok(())
+}
+
+/// Creates the output file path by setting the extension to `"enc"`.
+///
+/// If `output` is `Some`, that path is used (with its extension replaced).
+/// Otherwise, `input` must be `Some`, and we derive the output path from it.
+///
+/// # Arguments
+/// - `output`: Optional desired output path (as string slice).
+/// - `input`:  Optional input path (as string slice), used if `output` is `None`.
+///
+/// # Returns
+/// - `Ok(PathBuf)`: The output path with `.enc` extension.
+/// - `Err(String)`: If both `output` and `input` are `None`.
+pub fn get_output_path(
+    output: Option<String>,
+    input: Option<String>,
+) -> Result<PathBuf, Box<dyn Error>> {
+    let mut path = if let Some(out) = output {
+        PathBuf::from(out)
+    } else if let Some(inp) = input {
+        PathBuf::from(inp)
+    } else {
+        return Err("Could not determine output path: no output or input provided".into());
+    };
+
+    path.set_extension("enc");
+    Ok(path)
 }
 
 // === Key use helpers ===
@@ -839,7 +908,7 @@ pub fn encrypt_sym_blob(
     key_info: &DerivedKeyInfo,
     aead_id: u8,
     plaintext: &[u8],
-    filename_len: u16,
+    filename_len: &u16,
 ) -> Result<Vec<u8>, Box<dyn Error>> {
     let nonce = get_nonce()?;
 

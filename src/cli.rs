@@ -248,14 +248,36 @@ pub struct EncryptArgs {
 
     #[arg(short = 's', long = "sign")]
     pub sign_key: Option<String>,
+
+    #[arg(long = "from_clip", default_value_t = false)]
+    pub from_clip: bool,
+
+    #[arg(long = "to_clip", default_value_t = false)]
+    pub to_clip: bool,
 }
 
 impl Validatable for EncryptArgs {
     fn validate(&self) -> Result<(), Box<dyn Error>> {
         match &self.input {
-            Some(path) => validate_path(path)?,
-            None => return Err("No input file found.".into()),
+            Some(path) => {
+                validate_path(path)?;
+
+                // Check if the user listed the clipboard as input
+                if self.from_clip {
+                    return Err("Cannot have multiple sources of input.".into());
+                }
+            }
+            None => {
+                if !self.from_clip {
+                    return Err("No input file found.".into());
+                }
+            }
         }
+        // Currently locking out outputting to a file and clipboard
+        if self.to_clip && self.output.is_some() {
+            return Err("Must specify a single source of output".into());
+        }
+
         // Does not need kdf and input key
         if self.input_key.is_some() && self.kdf.is_some() {
             return Err("Cannot provide both an input key and a KDF — choose one.".into());
@@ -291,13 +313,26 @@ impl Validatable for EncryptArgs {
 pub struct DecryptArgs {
     pub input: Option<String>,
     pub output: Option<String>,
+
+    #[arg(long = "from_clip", default_value_t = false)]
+    pub from_clip: bool,
+
+    #[arg(long = "to_clip", default_value_t = false)]
+    pub to_clip: bool,
 }
 
 impl Validatable for DecryptArgs {
     fn validate(&self) -> Result<(), Box<dyn Error>> {
         match &self.input {
             Some(path) => validate_path(path)?,
-            None => return Err("No input file found.".into()),
+            None => {
+                if !self.from_clip {
+                    return Err("No input file found.".into());
+                }
+            }
+        }
+        if self.to_clip && self.output.is_some() {
+            return Err("Please choose a single source of output.".into());
         }
         Ok(())
     }

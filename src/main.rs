@@ -48,46 +48,40 @@ fn main() -> Result<(), Box<dyn Error>> {
                     }
                 },
             };
+            let mut plaintext = Vec::<u8>::new();
+            let mut filename = String::from("file.txt");
 
-            let input_path_str = args
-                .input
-                .clone()
-                .ok_or("Could not find input path".to_string())?;
-            let input_path = PathBuf::from(input_path_str);
-            let filename = input_path
-                .file_name()
-                .ok_or_else(|| format!("Input path has no filename: {}", input_path.display()))?
-                .to_str()
-                .ok_or_else(|| format!("Filename is not valid UTF-8: {}", input_path.display()))?;
-            let filename_bytes = filename.as_bytes();
-            let filename_len = filename_bytes.len() as u16;
-
-            // Read plaintext
-            let mut plaintext = utils::read_file(
-                input_path
-                    .to_str()
-                    .ok_or_else(|| format!("Failed to read file: {}", input_path.display()))?,
-            )?;
-            plaintext.extend_from_slice(filename_bytes); // Append filename for recovery
-
-            // Determine output path
-            let out_path = match args.output {
-                Some(ref path) => {
-                    let mut p = PathBuf::from(path);
-                    p.set_extension("enc");
-                    p
+            // Read in plaintext either from the input file or the clipboard
+            match args.from_clip {
+                true => {
+                    plaintext.extend_from_slice(&utils::read_clipboard()?);
+                    plaintext.extend_from_slice(&filename.as_bytes())
                 }
-                // No output path specified, make one based on input
-                None => {
-                    let out_path_str = args
+                false => {
+                    let input_path_str = args
                         .input
                         .clone()
                         .ok_or("Could not find input path".to_string())?;
-                    let mut p = PathBuf::from(out_path_str);
-                    p.set_extension("enc");
-                    p
+                    let input_path = PathBuf::from(input_path_str);
+                    filename = input_path
+                        .file_name()
+                        .ok_or_else(|| {
+                            format!("Input path has no filename: {}", input_path.display())
+                        })?
+                        .to_str()
+                        .ok_or_else(|| {
+                            format!("Filename is not valid UTF-8: {}", input_path.display())
+                        })?
+                        .to_string();
+                    let filename_bytes = filename.as_bytes();
+                    let file_bytes = utils::read_file(input_path.to_str().ok_or_else(|| {
+                        format!("Failed to read file: {}", input_path.display())
+                    })?)?;
+                    // Read plaintext
+                    plaintext.extend_from_slice(&file_bytes);
+                    plaintext.extend_from_slice(filename_bytes);
                 }
-            };
+            }
 
             // Determines if the given key is sym or asym; no key routes to sym
             let asym = match &args.input_key {
@@ -113,7 +107,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     let alg_id = key.key_type();
 
                     let mut blob = utils::build_asym_encrypted_blob(
-                        alg_id, sym_alg_id, &key, filename, &plaintext,
+                        alg_id, sym_alg_id, &key, &filename, &plaintext,
                     )?;
 
                     // If there is a signing key, sign the data
@@ -136,13 +130,22 @@ fn main() -> Result<(), Box<dyn Error>> {
                             &sign_private_key,
                         )?;
                     }
-                    let mut f = File::create(&out_path)?;
-                    f.write_all(&blob)?;
+                    match args.to_clip {
+                        true => {
+                            utils::write_clipboard(blob)?;
+                            println!("Asymmetric encrypted text copied to clipboard");
+                        }
+                        false => {
+                            let out_path = utils::get_output_path(args.output, args.input)?;
+                            let mut f = File::create(&out_path)?;
+                            f.write_all(&blob)?;
 
-                    println!(
-                        "Asymmetric encrypted file written to {}",
-                        out_path.display()
-                    );
+                            println!(
+                                "Asymmetric encrypted file written to {}",
+                                out_path.display()
+                            );
+                        }
+                    }
                 }
 
                 false => {
@@ -165,8 +168,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                         None => profile.aead_alg_id,
                     };
 
+                    let filename_len = filename.len() as u16;
+
                     let mut blob =
-                        utils::encrypt_sym_blob(&key_info, aead_id, &plaintext, filename_len)?;
+                        utils::encrypt_sym_blob(&key_info, aead_id, &plaintext, &filename_len)?;
 
                     // If there is a signing key, sign the data
                     if args.sign_key.is_some() {
@@ -188,26 +193,42 @@ fn main() -> Result<(), Box<dyn Error>> {
                             &sign_private_key,
                         )?;
                     }
-                    let mut f = File::create(&out_path)?;
-                    f.write_all(&blob)?;
 
-                    println!("Symmetric encrypted file written to {}", out_path.display());
+                    match args.to_clip {
+                        true => {
+                            utils::write_clipboard(blob)?;
+                            println!("Symmetric encrypted text copied to clipboard");
+                        }
+                        false => {
+                            let out_path = utils::get_output_path(args.output, args.input)?;
+                            let mut f = File::create(&out_path)?;
+                            f.write_all(&blob)?;
+
+                            println!("Symmetric encrypted file written to {}", out_path.display());
+                        }
+                    }
                 }
             };
         }
 
         cli::Command::Decrypt(args) => {
             cli::validate_args(&args)?;
-            let in_path = PathBuf::from(
-                args.input
-                    .clone()
-                    .ok_or_else(|| "No input path.".to_string())?,
-            );
-            let mut f = File::open(&in_path)?;
 
             // Read blob and magic
             let mut blob = Vec::new();
-            f.read_to_end(&mut blob)?;
+
+            match args.from_clip {
+                true => blob.extend_from_slice(&utils::read_clipboard()?),
+                false => {
+                    let in_path = PathBuf::from(
+                        args.input
+                            .clone()
+                            .ok_or_else(|| "No input path.".to_string())?,
+                    );
+                    let mut f = File::open(&in_path)?;
+                    f.read_to_end(&mut blob)?;
+                }
+            }
 
             let mut magic: [u8; 4] = blob[..4].try_into()?;
 
@@ -225,42 +246,60 @@ fn main() -> Result<(), Box<dyn Error>> {
                 magic = blob[..4].try_into()?;
             }
 
+            // TODO: Fix how this is implemented, there is a ton of unnecessary repeated code here
             match &magic {
                 b"ENC2" => {
                     // Asymmetric decryption
                     let (filename_bytes, plaintext) = utils::decrypt_asym_blob(&blob)?;
                     let original_filename = String::from_utf8_lossy(&filename_bytes);
 
-                    // Get out path and write to file
-                    let out_path = match args.output {
-                        Some(ref path) => PathBuf::from(path),
-                        None => PathBuf::from(original_filename.to_string()),
-                    };
+                    match args.to_clip {
+                        true => {
+                            utils::write_clipboard(plaintext)?;
+                            println!("Decryption complete. Output copied to clipboard")
+                        }
+                        false => {
+                            // Get out path and write to file
+                            let out_path = match args.output {
+                                Some(ref path) => PathBuf::from(path),
+                                None => PathBuf::from(original_filename.to_string()),
+                            };
 
-                    let mut out_file = File::create(&out_path)?;
-                    out_file.write_all(&plaintext)?;
+                            let mut out_file = File::create(&out_path)?;
+                            out_file.write_all(&plaintext)?;
 
-                    println!(
-                        "Decryption complete. Output written to {}",
-                        out_path.display()
-                    );
+                            println!(
+                                "Decryption complete. Output written to {}",
+                                out_path.display()
+                            );
+                        }
+                    }
                 }
                 b"ENC1" => {
                     // Symmetric decryption
                     let (file_data, filename) = utils::decrypt_sym_blob(&blob)?;
-                    // Get out path and write file
-                    let out_path = match args.output {
-                        Some(ref path) => PathBuf::from(path),
-                        None => PathBuf::from(filename),
-                    };
 
-                    let mut out_file = File::create(&out_path)?;
-                    out_file.write_all(&file_data)?;
+                    match args.to_clip {
+                        true => {
+                            utils::write_clipboard(file_data)?;
+                            println!("Decryption complete. Output copied to clipboard");
+                        }
+                        false => {
+                            // Get out path and write file
+                            let out_path = match args.output {
+                                Some(ref path) => PathBuf::from(path),
+                                None => PathBuf::from(filename),
+                            };
 
-                    println!(
-                        "Decryption complete. Output written to {}",
-                        out_path.display()
-                    );
+                            let mut out_file = File::create(&out_path)?;
+                            out_file.write_all(&file_data)?;
+
+                            println!(
+                                "Decryption complete. Output written to {}",
+                                out_path.display()
+                            );
+                        }
+                    }
                 }
                 // The magic is unrecognized
                 _ => return Err("Unknown encryption format".into()),
@@ -283,22 +322,17 @@ fn main() -> Result<(), Box<dyn Error>> {
             // find the thing to update
             match args.update_field.as_str() {
                 "aead" => {
-                    let id = utils::alg_name_to_id(&args.value)
-                        .map_err(|e| format!("Invalid aead_alg_id: {}", e))?;
+                    let id = utils::alg_name_to_id(&args.value)?;
                     profile.aead_alg_id = id;
                 }
 
                 "kdf" => {
-                    let id = utils::alg_name_to_id(&args.value)
-                        .map_err(|e| format!("Invalid kdf_id: {}", e))?;
+                    let id = utils::alg_name_to_id(&args.value)?;
                     profile.kdf_id = id;
                 }
 
                 "memory_cost" | "time_cost" | "parallelism" | "iterations" => {
-                    let number =
-                        utils::parse_u32(&args.update_field, &args.value).map_err(|e| {
-                            format!("Invalid value for '{}': {}", &args.update_field, e)
-                        })?;
+                    let number = utils::parse_u32(&args.update_field, &args.value)?;
                     profile.params.insert(args.update_field.clone(), number);
                 }
 

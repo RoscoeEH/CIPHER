@@ -220,6 +220,8 @@ pub enum Command {
 #[derive(Args, Clone)]
 pub struct EncryptArgs {
     pub input: Option<String>,
+
+    #[arg(short = 'o', long = "output")]
     pub output: Option<String>,
 
     #[arg(short = 'p', long = "profile", default_value_t = String::from("Default"))]
@@ -249,10 +251,10 @@ pub struct EncryptArgs {
     #[arg(short = 's', long = "sign")]
     pub sign_key: Option<String>,
 
-    #[arg(long = "from_clip", default_value_t = false)]
+    #[arg(long = "from-clip", default_value_t = false)]
     pub from_clip: bool,
 
-    #[arg(long = "to_clip", default_value_t = false)]
+    #[arg(long = "to-clip", default_value_t = false)]
     pub to_clip: bool,
 }
 
@@ -312,12 +314,13 @@ impl Validatable for EncryptArgs {
 #[derive(Args)]
 pub struct DecryptArgs {
     pub input: Option<String>,
+    #[arg(short = 'o', long = "output")]
     pub output: Option<String>,
 
-    #[arg(long = "from_clip", default_value_t = false)]
+    #[arg(long = "from-clip", default_value_t = false)]
     pub from_clip: bool,
 
-    #[arg(long = "to_clip", default_value_t = false)]
+    #[arg(long = "to-clip", default_value_t = false)]
     pub to_clip: bool,
 }
 

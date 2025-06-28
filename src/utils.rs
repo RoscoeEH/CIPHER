@@ -714,7 +714,7 @@ pub fn build_asym_encrypted_blob(
 ///   - Error reading the algorithm IDs or key ID,
 ///   - Failure to retrieve the private key from the key storage,
 ///   - Decryption failure, including if the filename length exceeds the decrypted content size.
-pub fn decrypt_asym_blob(blob: &[u8]) -> Result<(Vec<u8>, Vec<u8>), Box<dyn Error>> {
+pub fn decrypt_asym_blob(blob: &[u8]) -> Result<(Vec<u8>, String), Box<dyn Error>> {
     let mut cursor = std::io::Cursor::new(blob);
 
     // Check header
@@ -765,10 +765,11 @@ pub fn decrypt_asym_blob(blob: &[u8]) -> Result<(Vec<u8>, Vec<u8>), Box<dyn Erro
     }
 
     let filename_start = total_len - filename_len;
-    let filename_bytes = plaintext_with_filename[filename_start..].to_vec();
+    let filename =
+        String::from_utf8_lossy(&plaintext_with_filename[filename_start..].to_vec()).to_string();
     let plaintext = plaintext_with_filename[..filename_start].to_vec();
 
-    Ok((filename_bytes, plaintext))
+    Ok((plaintext, filename))
 }
 
 /// Decrypts a symmetric encrypted blob, extracting the file data and the filename.

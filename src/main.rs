@@ -246,64 +246,30 @@ fn main() -> Result<(), Box<dyn Error>> {
                 magic = blob[..4].try_into()?;
             }
 
-            // TODO: Fix how this is implemented, there is a ton of unnecessary repeated code here
-            match &magic {
-                b"ENC2" => {
-                    // Asymmetric decryption
-                    let (filename_bytes, plaintext) = utils::decrypt_asym_blob(&blob)?;
-                    let original_filename = String::from_utf8_lossy(&filename_bytes);
-
-                    match args.to_clip {
-                        true => {
-                            utils::write_clipboard(plaintext)?;
-                            println!("Decryption complete. Output copied to clipboard")
-                        }
-                        false => {
-                            // Get out path and write to file
-                            let out_path = match args.output {
-                                Some(ref path) => PathBuf::from(path),
-                                None => PathBuf::from(original_filename.to_string()),
-                            };
-
-                            let mut out_file = File::create(&out_path)?;
-                            out_file.write_all(&plaintext)?;
-
-                            println!(
-                                "Decryption complete. Output written to {}",
-                                out_path.display()
-                            );
-                        }
-                    }
-                }
-                b"ENC1" => {
-                    // Symmetric decryption
-                    let (file_data, filename) = utils::decrypt_sym_blob(&blob)?;
-
-                    match args.to_clip {
-                        true => {
-                            utils::write_clipboard(file_data)?;
-                            println!("Decryption complete. Output copied to clipboard");
-                        }
-                        false => {
-                            // Get out path and write file
-                            let out_path = match args.output {
-                                Some(ref path) => PathBuf::from(path),
-                                None => PathBuf::from(filename),
-                            };
-
-                            let mut out_file = File::create(&out_path)?;
-                            out_file.write_all(&file_data)?;
-
-                            println!(
-                                "Decryption complete. Output written to {}",
-                                out_path.display()
-                            );
-                        }
-                    }
-                }
-                // The magic is unrecognized
+            // Decrypt the text
+            let (plaintext, filename) = match &magic {
+                b"ENC1" => utils::decrypt_sym_blob(&blob)?,
+                b"ENC2" => utils::decrypt_asym_blob(&blob)?,
                 _ => return Err("Unknown encryption format".into()),
             };
+
+            if args.to_clip {
+                utils::write_clipboard(plaintext)?;
+                println!("Decryption complete. Output copied to clipboard");
+            } else {
+                let out_path = match args.output {
+                    Some(ref path) => PathBuf::from(path),
+                    None => PathBuf::from(filename.to_string()),
+                };
+
+                let mut out_file = File::create(&out_path)?;
+                out_file.write_all(&plaintext)?;
+
+                println!(
+                    "Decryption complete. Output written to {}",
+                    out_path.display()
+                );
+            }
         }
         // Handles changed to default parameters
         cli::Command::Profile(args) => {

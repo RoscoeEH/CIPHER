@@ -4,28 +4,28 @@
 
 Cipher securely encapsulates all necessary cryptographic material—including ciphertext, salt, nonces, and algorithm identifiers—into a single `.enc` or `.sig` file for reliable and portable decryption and verification. Key generation, storage, and verification are handled via RocksDB and Serde, with user-defined profiles simplifying cryptographic parameter reuse.
 
-## ✨ Features
+## Features
 
-- 🔐 **Authenticated Encryption** using **AES-256-GCM** and **ChaCha20-Poly1305**
-- 🧪 **Known Answer Tests (KATs)** for symmetric encryption schemes
-- 🔑 **Password-based Key Derivation** with **Argon2** and **PBKDF2**
-- 📦 **User Profiles** for storing cryptographic preferences (KDF parameters, AEAD choice)
-- 🔁 **Asymmetric Encryption Support** for **RSA**, **ECC**, **Kyber**, and **Dilithium** including:
+- **Authenticated Encryption** using **AES-256-GCM** and **ChaCha20-Poly1305**
+- **Known Answer Tests (KATs)** for symmetric encryption schemes
+- **Password-based Key Derivation** with **Argon2** and **PBKDF2**
+- **User Profiles** for storing cryptographic preferences (KDF parameters, AEAD choice)
+- **Asymmetric Encryption Support** for **RSA**, **ECC**, **Kyber**, and **Dilithium** including:
   - Key generation
   - Encryption/decryption
   - Signing and verification
-- 📝 **Signed files** are saved with a `.sig` extension
-- 💾 **Serde-powered serialization** for user profiles and key storage
-- 🔐 **Secure Key Storage** using RocksDB with optional encryption of private keys
-- 🧂 Secure random **salt** and **nonce** generation
-- 🧽 Automatic **zeroization** of sensitive memory (e.g., keys, passwords)
-- 🔁 **Password verification** on entry to reduce human error
-- 🗂️ Encrypted output stored in a **single `.enc` file** containing:
+- **Signed files** are saved with a `.sig` extension
+- **Serde-powered serialization** for user profiles and key storage
+- **Secure Key Storage** using RocksDB with optional encryption of private keys
+- Secure random **salt** and **nonce** generation
+- Automatic **zeroization** of sensitive memory (e.g., keys, passwords)
+- **Password verification** on entry to reduce human error
+-  Encrypted output stored in a **single `.enc` file** containing:
   - Encrypted payload
   - Algorithm identifiers
   - Salt, nonce, and metadata
 
-## 📦 Dependencies
+## Dependencies
 
 This project makes use of the following Rust crates:
 
@@ -57,18 +57,18 @@ This project makes use of the following Rust crates:
 - [directories](https://crates.io/crates/directories) — Cross-platform standard directories (config, data, cache)
 - [chrono](https://crates.io/crates/chrono) — Date and time utilities
 
-## 🚀 Usage
+## Usage
 
 The `cipher` CLI tool provides a variety of commands to handle encryption, decryption, key management, and user profile customization.
 
 ### General Functions
 
-#### 🔐 File Encryption & Decryption
+#### File Encryption & Decryption
 
 - `encrypt`: Encrypt a file using symmetric (default) or asymmetric encryption. Supports profile-based parameter configuration, custom AEAD and KDF choices, and secure key handling.
 - `decrypt`: Decrypt an encrypted `.enc` file back to its original format.
 
-#### 🔑 Key Management
+#### Key Management
 
 - `keygen`: Generate a new symmetric or asymmetric key pair (RSA or ECC). Can be associated with a profile for customized encryption settings.
 - `list-keys`: Display all stored keys in the database.
@@ -76,12 +76,12 @@ The `cipher` CLI tool provides a variety of commands to handle encryption, decry
 - `export-key`: Export a public key as a `.pub` file for sharing or further use.
 - `import-key`: Import a `.pub` file containing a public key for use in encryption or verification.
 
-#### 🧾 Profiles
+#### Profiles
 
 - `profile`: Update a user profile’s encryption parameters (e.g., `kdf_id`, `aead_alg_id`, `memory_cost`, etc.).
 - `list-profiles`: Show all stored user profiles.
 
-#### ✍️ Signing & Verification
+####  Signing & Verification
 
 - `sign`: Digitally sign a file using a private key. The signature is saved as a `.sig` file.
 - `verify`: Verify a signed file and optionally extract the original content.
@@ -89,7 +89,7 @@ The `cipher` CLI tool provides a variety of commands to handle encryption, decry
 
 ### Inputs
 
-#### 🔐 `encrypt`
+#### `encrypt`
 
 | Argument          | Type     | Description                                                                |
 |-------------------|----------|----------------------------------------------------------------------------|
@@ -116,7 +116,7 @@ Encrypts a file into a `.enc` file. Can be used for asymmetric encryption if an 
 
 Decrypts all `.enc` file. Verifies a signature if signed.
 
-#### 🧬 `profile`
+#### `profile`
 
 | Argument         | Type      | Description                                                                            |
 |------------------|-----------|----------------------------------------------------------------------------------------|
@@ -126,10 +126,10 @@ Decrypts all `.enc` file. Verifies a signature if signed.
 
 Updated profiles that contain default parameters for key derivation and symmetric encryption.
 
-#### 📋 `list-profiles`
+#### `list-profiles`
 Lists all existing profiles.
 
-#### 🔑 `key-gen`
+#### `key-gen`
 
 | Argument              | Type      | Description                                                                |
 |-----------------------|-----------|----------------------------------------------------------------------------|
@@ -141,7 +141,7 @@ Lists all existing profiles.
 
 Generates a new key or keypair.
 
-#### 🗝️ `list-keys`
+####  `list-keys`
 
 | Argument            | Type   | Description                                                           |
 |---------------------|--------|-----------------------------------------------------------------------|
@@ -149,7 +149,7 @@ Generates a new key or keypair.
 
 Displays stored keys in the database. By default includes owned keys unless `--unowned` is specified.
 
-#### ❌ `delete-key`
+#### `delete-key`
 
 | Argument            | Type     | Description                                           |
 |---------------------|----------|-------------------------------------------------------|
@@ -158,7 +158,7 @@ Displays stored keys in the database. By default includes owned keys unless `--u
 
 Deletes a key by ID. Use `--unowned` if the key was imported and not locally generated.
 
-#### 💣 `wipe`
+#### `wipe`
 
 | Argument               | Type   | Description                                        |
 |------------------------|--------|----------------------------------------------------|
@@ -168,7 +168,7 @@ Deletes a key by ID. Use `--unowned` if the key was imported and not locally gen
 
 If no flags are provided, **all keys and profiles will be wiped by default**.
 
-#### ✍️ `sign`
+####  `sign`
 
 | Argument         | Type      | Description                        |
 |------------------|-----------|------------------------------------|
@@ -177,7 +177,7 @@ If no flags are provided, **all keys and profiles will be wiped by default**.
 
 Signs a file and creates a `.sig` file.
 
-#### ✅ `verify`
+#### `verify`
 
 | Argument             | Type     | Description                                        |
 |----------------------|----------|----------------------------------------------------|
@@ -186,7 +186,7 @@ Signs a file and creates a `.sig` file.
 
 Verifies `.sig` files, can also strip the signature and header from the file.
 
-#### 📤 `export-key`
+#### `export-key`
 
 | Argument           | Type      | Description                                                      |
 |--------------------|-----------|------------------------------------------------------------------|
@@ -195,7 +195,7 @@ Verifies `.sig` files, can also strip the signature and header from the file.
 
 Exports a public key associated with the given ID to a `.pub` file. If no name is provided, the key ID is used as the filename.
 
-#### 📥 `import-key`
+#### `import-key`
 
 | Argument            | Type      | Description                                                             |
 |---------------------|-----------|-------------------------------------------------------------------------|
